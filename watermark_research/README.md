@@ -199,7 +199,7 @@ python watermark_testing_joint.py --mode both --datasets LibriSpeech Bach10 --wa
 python watermark_testing_joint.py --mode detector --datasets LibriSpeech --watermarks JointManifold --filecount 30 --attack encodec24
 
 # Run benchmark with custom dataset path
-python watermark_testing_joint.py --mode benchmark --datasets /project/aimm/aki930/raw_bench/test_data/GuitarSet --watermarks SemanticCluster SemanticRandom --attack dac44
+python watermark_testing_joint.py --mode benchmark --datasets ../../raw_bench/test_data/GuitarSet --watermarks SemanticCluster SemanticRandom --attack dac44
 ```
 
 
@@ -311,12 +311,12 @@ $out/
 ```bash
 python transferbility_testing_all.py \
   --datasets LibriSpeech Bach10 \
-  --base_dir /project/aimm/aki930/raw_bench/test_data \
+  --base_dir ../../raw_bench/test_data \
   --watermarks JointManifold SemanticPCA SemanticCluster SemanticRandom \
   --filecount 120 \
   --opt_set all \
   --attack all \
-  --out /project/aimm/aki930/Neural-Audio-Watermarking-Codec-Interpretability-Explainability/watermark_research/results_exp15 \
+  --out ../..//Neural-Audio-Watermarking-Codec-Interpretability-Explainability/watermark_research/results_exp15 \
   --skip_datasets AIR Clotho DAPS DEMAND Freischuetz GuitarSet jaCappella MAESTRO PCD \
   --save_wavs
 ```
