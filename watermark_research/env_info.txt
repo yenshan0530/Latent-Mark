@@ -1,0 +1,101 @@
+=== OS ===
+Linux cml30 5.15.0-164-generic #174-Ubuntu SMP Fri Nov 14 20:25:16 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+
+=== Python ===
+/home/master/13/akinesia112/anaconda3/envs/aw/bin/python
+Python 3.10.12
+
+=== Conda ===
+conda 24.11.3
+
+     active environment : aw
+    active env location : /home/master/13/akinesia112/anaconda3/envs/aw
+            shell level : 4
+       user config file : /home/master/13/akinesia112/.condarc
+ populated config files : /home/master/13/akinesia112/anaconda3/.condarc
+                          /home/master/13/akinesia112/.condarc
+          conda version : 24.11.3
+    conda-build version : 24.9.0
+         python version : 3.12.2.final.0
+                 solver : libmamba (default)
+       virtual packages : __archspec=1=cascadelake
+                          __conda=24.11.3=0
+                          __cuda=13.0=0
+                          __glibc=2.35=0
+                          __linux=5.15.0=0
+                          __unix=0=0
+       base environment : /home/master/13/akinesia112/anaconda3  (writable)
+      conda av data dir : /home/master/13/akinesia112/anaconda3/etc/conda
+  conda av metadata url : None
+           channel URLs : https://conda.anaconda.org/pytorch/linux-64
+                          https://conda.anaconda.org/pytorch/noarch
+                          https://repo.anaconda.com/pkgs/main/linux-64
+                          https://repo.anaconda.com/pkgs/main/noarch
+                          https://repo.anaconda.com/pkgs/r/linux-64
+                          https://repo.anaconda.com/pkgs/r/noarch
+          package cache : /home/master/13/akinesia112/anaconda3/pkgs
+                          /home/master/13/akinesia112/.conda/pkgs
+       envs directories : /home/master/13/akinesia112/anaconda3/envs
+                          /home/master/13/akinesia112/.conda/envs
+               platform : linux-64
+             user-agent : conda/24.11.3 requests/2.32.3 CPython/3.12.2 Linux/5.15.0-164-generic ubuntu/22.04.5 glibc/2.35 solver/libmamba conda-libmamba-solver/24.9.0 libmambapy/1.5.8 aau/0.4.4 c/14IvV7wPwAmOS73kUwAecQ s/1Q6SvVn_FFlvklQB2VWRpA e/wuwHgQwJgBsgIA5hx3BmHQ
+                UID:GID : 7071:1000
+             netrc file : /home/master/13/akinesia112/.netrc
+           offline mode : False
+
+
+=== CUDA (if any) ===
+Wed Feb  4 22:21:20 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.09             Driver Version: 580.126.09     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA RTX A6000               Off |   00000000:1B:00.0 Off |                  Off |
+| 30%   56C    P2            248W /  300W |   14120MiB /  49140MiB |     88%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA RTX A6000               Off |   00000000:1C:00.0 Off |                  Off |
+| 30%   56C    P2            157W /  300W |   23554MiB /  49140MiB |     83%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA RTX A6000               Off |   00000000:1D:00.0 Off |                  Off |
+| 30%   43C    P2             72W /  300W |    4898MiB /  49140MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   3  NVIDIA RTX A6000               Off |   00000000:1E:00.0 Off |                  Off |
+| 30%   52C    P2            103W /  300W |   30972MiB /  49140MiB |      4%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   4  NVIDIA RTX 4500 Ada Gene...    Off |   00000000:B2:00.0 Off |                  Off |
+| 33%   61C    P2            132W /  210W |   19740MiB /  24570MiB |     97%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   5  NVIDIA RTX 4500 Ada Gene...    Off |   00000000:B3:00.0 Off |                  Off |
+| 32%   60C    P2            130W /  210W |   19740MiB /  24570MiB |     98%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   6  NVIDIA RTX 4500 Ada Gene...    Off |   00000000:B4:00.0 Off |                  Off |
+| 30%   41C    P2             88W /  210W |    5082MiB /  24570MiB |     44%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A          362653      C   ...nvs/gaussianformer/bin/python      14106MiB |
+|    1   N/A  N/A          362654      C   ...nvs/gaussianformer/bin/python      14096MiB |
+|    1   N/A  N/A         1321705      C   ...iniforge3/envs/ssr/bin/python       4850MiB |
+|    3   N/A  N/A          362655      C   ...nvs/gaussianformer/bin/python      14102MiB |
+|    4   N/A  N/A         1007468      C   python                                19730MiB |
+|    5   N/A  N/A         1014647      C   python                                19730MiB |
+|    6   N/A  N/A         1112896      C   python                                 5072MiB |
++-----------------------------------------------------------------------------------------+
+Please ask your administrator.
+
+=== Pip ===
+pip 25.3 from /home/master/13/akinesia112/anaconda3/envs/aw/lib/python3.10/site-packages/pip (python 3.10)
