@@ -26,7 +26,7 @@ python -m pip install -r requirements.txt
 ```
 
 ### Datasets
-Download and prepare the datasets as described in `raw_bench`. Ensure that the datasets are organized under a common root directory (naned as `../../test_dats/`) with subfolders for each dataset.
+Download and prepare the datasets as described in `raw_bench`. Ensure that the datasets are organized under a common root directory (named as `../../test_dats/`) with subfolders for each dataset.
 
 
 ### Watermark Testing (Single-Attacker Benchmark)
