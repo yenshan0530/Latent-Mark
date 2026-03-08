@@ -316,7 +316,7 @@ python transferbility_testing_all.py \
   --filecount 120 \
   --opt_set all \
   --attack all \
-  --out ../..//Neural-Audio-Watermarking-Codec-Interpretability-Explainability/watermark_research/results_exp15 \
+  --out ../../results_exp15 \
   --skip_datasets AIR Clotho DAPS DEMAND Freischuetz GuitarSet jaCappella MAESTRO PCD \
   --save_wavs
 ```
