@@ -52,6 +52,18 @@ Pass the CSV file path via command-line arguments. You can also optionally speci
 
 ---
 
+## Step 3: Paper figures (`plot_for_paper.py`)
+
+Produces the Delta SI-SNR and UTMOS boxplots used in the paper, as PNG (with titles) and PDF (without), plus a standalone legend. Pass one or more CSVs from Step 1 to each flag.
+
+    python plot_for_paper.py --delta_si_snr_csv quality_results.csv --utmos_csv quality_results.csv --out plots_paper_figures
+
+`plot_quality_distributions_with_mean.py` draws per-metric histograms with the clean-audio mean marked. It reads one CSV per method named `<Method>_quality_results.csv` from the current directory; edit the `csv_files` map at the top to point at your files.
+
+`quality_metric_summary.csv` holds the per-method mean and standard deviation of every metric on the evaluation set, for reference.
+
+---
+
 ## Dependencies & Environment Setup
 
 Ensure the required Python packages are installed before running the scripts.

@@ -18,6 +18,14 @@ import torch
 import torch.nn.functional as F
 import torchaudio.functional as AF
 
+# Optional: only needed by RawBenchWrapper (RAW-Bench attack backend)
+try:
+    from omegaconf import OmegaConf
+    from raw_bench.attacks import AudioAttack
+except Exception:  # pragma: no cover
+    OmegaConf = None
+    AudioAttack = None
+
 
 class RB_GaussianNoise:
     def __init__(self, snr=20):
@@ -123,6 +131,8 @@ class RawBenchWrapper:
         self.params = params
 
         # 2. Initialize RawBench's black box
+        if OmegaConf is None or AudioAttack is None:
+            raise RuntimeError("RawBenchWrapper needs omegaconf and raw_bench installed.")
         attack_cfg = OmegaConf.load(config_path)
         self.rb_attacker = AudioAttack(
             sr=sr,
@@ -1303,10 +1313,13 @@ if __name__ == "__main__":
         help="Run mode: benchmark, detector, or both",
     )
 
+    parser.add_argument("--base_dir", type=str, default="../../dataset", help="Root folder containing one subfolder per dataset (default: ../../dataset)")
+    parser.add_argument("--out", type=str, default="../results_dsp", help="Output root folder (default: ../results_dsp)")
+
     args = parser.parse_args()
 
-    base_data_dir = "../../dataset"
-    base_output_dir = "../results_silentcipher_fix"
+    base_data_dir = args.base_dir
+    base_output_dir = args.out
 
     global_results = []
     for dataset in args.datasets:

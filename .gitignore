@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Experiment outputs (not shipped)
+results*/
+watermark_research/results*/
+audio_quality_check/plots*/
+audio_quality_check/quality_results*.csv
+*.wav
+*.mp3
+!raw_bench/**
+
+# Datasets
+dataset/
+test_data/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

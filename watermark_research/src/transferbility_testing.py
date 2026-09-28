@@ -23,7 +23,7 @@ logger = logging.getLogger()
 
 def ensure_mono(wav: torch.Tensor) -> torch.Tensor:
     """
-     (channels, time) or (batch, channels, time) -> (1, time) or (batch, 1, time) in mono channel.
+    Collapse (channels, time) or (batch, channels, time) to mono.
     """
     if wav.dim() == 2 and wav.size(0) > 1:          # (C, T)
         wav = wav.mean(dim=0, keepdim=True)         # -> (1, T)
@@ -58,13 +58,13 @@ def as_bct(wav: torch.Tensor) -> torch.Tensor:
     return wav
 
 
-# --- 1. The Attacker: SNAC  ---
+# --- 1. The Attacker: SNAC (Qwen-Omni Tokenizer) ---
 from snac import SNAC
 
-class Attack:
+class QwenOmniAttack:
     def __init__(self, device):
         self.device = device
-        print(f"Loading SNAC on {device}...")
+        print(f"Loading SNAC (Qwen/Mini-Omni Tokenizer) on {device}...")
         # SNAC 24kHz is the standard for Mini-Omni
         self.model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").to(device).eval()
         self.target_sr = 24000
@@ -107,6 +107,8 @@ class Watermarker:
         self.name = "Base"
     def embed(self, audio, sr): raise NotImplementedError
     def detect(self, audio, sr, payload): raise NotImplementedError
+
+# ... [Existing Watermarkers: AudioSeal, WavMark, SilentCipher] ...
 
 class AudioSealWM(Watermarker):
     def __init__(self, device):
@@ -180,7 +182,8 @@ class SilentCipherWM(Watermarker):
         try:
             import silentcipher
             # Load model (SilentCipher usually defaults to 44.1k)
-            ckpt_path = '../../raw_bench/wm_ckpts/silent_cipher/44_1_khz/73999_iteration'
+            # You might need to update this path or use a default one
+            ckpt_path = '~/spml-final/raw_bench/wm_ckpts/silent_cipher/44_1_khz/73999_iteration'
             config_path = os.path.join(ckpt_path, 'hparams.yaml')
             if os.path.exists(ckpt_path):
                 self.model = silentcipher.get_model(
@@ -224,6 +227,7 @@ class SilentCipherWM(Watermarker):
             else: return 0.0
         except: return 0.0
 
+# ... [Existing Semantic methods] ...
 class SemanticPCAWM(Watermarker):
     def __init__(self, device):
         super().__init__(device)
@@ -397,6 +401,7 @@ class SemanticClusterWM(Watermarker):
             return projections.mean().item()
 
 class SemanticWM(Watermarker):
+    # (Existing Random implementation, abbreviated for brevity as it's similar to Cluster)
     def __init__(self, device='cuda'):
         super().__init__(device)
         self.name = "SemanticRandom"
@@ -476,54 +481,141 @@ class SemanticWM(Watermarker):
             projections = torch.matmul(z.permute(0, 2, 1), self.manifold_vector).squeeze()
             return projections.mean().item()
 
-# --- 4. Joint Optimization ---
+# --- 4. NEW: Joint Manifold Optimization (Transferability Method) ---
 
-class SoundStreamAttack:
+# class SoundStreamAttack:
+#     def __init__(self, device="cpu"):
+#         from soundstream import from_pretrained
+#         self.codec = from_pretrained().to(device).eval()
+#         self.device = device
+#         self.target_sr = 16000
+
+#     @torch.no_grad()
+#     def attack(self, audio: torch.Tensor, input_sr: int) -> torch.Tensor:
+#         # --- normalize input to (B,C,T) ---
+#         wav = as_bct(audio)          # (B,C,T)
+#         wav = ensure_mono(wav)       # (B,1,T)
+
+#         # --- resample to 16k ---
+#         wav16 = torchaudio.functional.resample(wav, input_sr, self.target_sr)  # (B,1,T)
+
+#         # soundstream package expects (B,C,T) float
+#         wav16 = wav16.to(self.device)
+
+#         # encode/decode (keep batch dim!)
+#         q = self.codec(wav16, mode="encode")
+#         rec = self.codec(q, mode="decode")          # expect (B,C,T)
+
+#         # back to cpu for rest of pipeline
+#         rec = rec.detach().cpu()
+
+#         # --- resample back to input_sr ---
+#         rec = torchaudio.functional.resample(rec, self.target_sr, input_sr)    # (B,1,T)
+
+#         # --- match original length ---
+#         T0 = as_bct(audio).shape[-1]
+#         if rec.shape[-1] > T0:
+#             rec = rec[..., :T0]
+#         elif rec.shape[-1] < T0:
+#             rec = F.pad(rec, (0, T0 - rec.shape[-1]))
+
+#         # return as (C,T) to match the rest of your framework
+#         return rec[0]   # (1,T)
+
+
+class FunCodecAttack:
     def __init__(self, device="cpu"):
-        from soundstream import from_pretrained
-        self.codec = from_pretrained().to(device).eval()
         self.device = device
-        self.target_sr = 16000
+        self.target_sr = 24000
+        try:
+            # We attempt to load a standard Speech2Token or native Model
+            from funcodec.bin.codec_inference import Speech2Token
+            self.codec = Speech2Token("damo/audio_codec-freqcodec_v2-zh_en-24k-16k-32k", device=device)
+        except ImportError:
+            print("[FunCodecAttack] funcodec not installed or model not found.")
+            self.codec = None
 
     @torch.no_grad()
     def attack(self, audio: torch.Tensor, input_sr: int) -> torch.Tensor:
-        # --- normalize input to (B,C,T) ---
-        wav = as_bct(audio)          # (B,C,T)
-        wav = ensure_mono(wav)       # (B,1,T)
+        wav = as_bct(audio)
+        wav = ensure_mono(wav)
+        if self.codec is None:
+            return wav[0]
 
-        # --- resample to 16k ---
-        wav16 = torchaudio.functional.resample(wav, input_sr, self.target_sr)  # (B,1,T)
+        wav_24 = torchaudio.functional.resample(wav, input_sr, self.target_sr).to(self.device)
+        
+        try:
+            # typical FunCodec raw input encoding via model forward or specific encode API
+            if hasattr(self.codec, 'encode') and hasattr(self.codec, 'decode'):
+                z = self.codec.encode(wav_24)
+                rec = self.codec.decode(z)
+            elif hasattr(self.codec, 'model'):
+                # fallback for modelscope pipeline wrapper
+                z, _ = self.codec.model.encode(wav_24)
+                rec = self.codec.model.decode(z)
+            else:
+                rec = wav_24
+        except Exception as e:
+            print(f"[FunCodecAttack] Inference error: {e}")
+            rec = wav_24
 
-        # soundstream package expects (B,C,T) float
-        wav16 = wav16.to(self.device)
-
-        # encode/decode (keep batch dim!)
-        q = self.codec(wav16, mode="encode")
-        rec = self.codec(q, mode="decode")          # expect (B,C,T)
-
-        # back to cpu for rest of pipeline
-        rec = rec.detach().cpu()
-
-        # --- resample back to input_sr ---
-        rec = torchaudio.functional.resample(rec, self.target_sr, input_sr)    # (B,1,T)
-
-        # --- match original length ---
-        T0 = as_bct(audio).shape[-1]
+        rec = rec.cpu()
+        rec = torchaudio.functional.resample(rec, self.target_sr, input_sr)
+        
+        T0 = wav.shape[-1]
         if rec.shape[-1] > T0:
             rec = rec[..., :T0]
         elif rec.shape[-1] < T0:
             rec = F.pad(rec, (0, T0 - rec.shape[-1]))
 
-        # return as (C,T) to match the rest of your framework
-        return rec[0]   # (1,T)
+        return rec[0]
+
+
+class APCodecAttack:
+    def __init__(self, device="cpu"):
+        self.device = device
+        self.target_sr = 48000 # APCodec usually operates at 48k or 44.1k
+        try:
+            import apcodec
+            from apcodec.models import APCodecModel 
+            # Trying to load a standard from_pretrained definition if it exists
+            self.codec = APCodecModel.from_pretrained().to(self.device).eval()
+        except (ImportError, AttributeError):
+            print("[APCodecAttack] apcodec not installed or bad API structure.")
+            self.codec = None
+
+    @torch.no_grad()
+    def attack(self, audio: torch.Tensor, input_sr: int) -> torch.Tensor:
+        wav = as_bct(audio)
+        wav = ensure_mono(wav)
+        if self.codec is None: 
+            return wav[0]
+
+        wav_sr = torchaudio.functional.resample(wav, input_sr, self.target_sr).to(self.device)
+        try:
+           z = self.codec.encode(wav_sr)
+           rec = self.codec.decode(z)
+        except Exception as e:
+           print(f"[APCodecAttack] Inference error: {e}")
+           rec = wav_sr
+           
+        rec = torchaudio.functional.resample(rec, self.target_sr, input_sr).cpu()
+        T0 = wav.shape[-1]
+        if rec.shape[-1] > T0: 
+            rec = rec[..., :T0]
+        elif rec.shape[-1] < T0: 
+            rec = F.pad(rec, (0, T0 - rec.shape[-1]))
+        return rec[0]
 
 
 
 class AttackRouter:
     """
     Attack choices:
-      - "snac"        : SNAC tokenize/decode
+      - "snac"        : QwenOmniAttack (SNAC tokenize/decode)
       - "soundstream" : SoundStreamAttack
+      - "funcodec"    : FunCodecAttack
+      - "apcodec"     : APCodecAttack
       - "encodec24"   : audiocraft EnCodec 24kHz encode/decode
       - "dac44"       : DAC 44.1kHz encode/decode
       - "encodec32"   : audiocraft EnCodec 32kHz encode/decode
@@ -534,8 +626,10 @@ class AttackRouter:
         self.device = device
         self.attack_type = attack_type.lower()
 
-        self.snac_attacker = Attack(device) if self.attack_type == "snac" else None
-        self.ss_attacker   = SoundStreamAttack(device=device) if self.attack_type == "soundstream" else None
+        self.snac_attacker = QwenOmniAttack(device) if self.attack_type == "snac" else None
+        # self.ss_attacker   = SoundStreamAttack(device=device) if self.attack_type == "soundstream" else None
+        self.funcodec_attacker = FunCodecAttack(device=device) if self.attack_type == "funcodec" else None
+        self.apcodec_attacker  = APCodecAttack(device=device) if self.attack_type == "apcodec" else None
 
         # codec attackers (audiocraft)
         self.c_enc24 = None
@@ -566,6 +660,12 @@ class AttackRouter:
 
         if self.attack_type == "soundstream":
             return self.ss_attacker.attack(audio, input_sr)
+            
+        if self.attack_type == "funcodec":
+            return self.funcodec_attacker.attack(audio, input_sr)
+            
+        if self.attack_type == "apcodec":
+            return self.apcodec_attacker.attack(audio, input_sr)
 
         # codec encode/decode attack
         wav = as_bct(audio)
@@ -607,10 +707,12 @@ class JointManifoldWM(Watermarker):
       - 'encodec32' : EnCodec 32kHz latent
       - 'dac44'     : DAC 44.1kHz latent
       - 'snac'      : SNAC encoder latent (as watermark space)
+      - 'funcodec'  : FunCodec FreqCodec latent
+      - 'apcodec'   : APCodec latent
 
     By default (per your request): ('snac', 'encodec24', 'encodec32')
     """
-    def __init__(self, device='cuda', joint_codecs=("snac", "encodec24", "dac44"),
+    def __init__(self, device='cuda', joint_codecs=("snac", "encodec24", "encodec32"),
                  calib_k=1.5, calib_files=42, calib_seconds=3.0, calib_frames_per_file=512):
         super().__init__(device)
         self.name = "JointManifold"
@@ -630,18 +732,38 @@ class JointManifoldWM(Watermarker):
         self.sr_dac44 = self.c_dac44.sample_rate   # 44100
         self.sr_enc32 = self.c_enc32.sample_rate   # 32000
 
-        # SNAC for joint space
-        self.snac = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").to(device).eval()
-        for p in self.snac.parameters():
-            p.requires_grad = False
-        self.sr_snac = 24000
-
         # config
         self.joint_codecs = tuple(joint_codecs)
         self.calib_k = float(calib_k)
         self.calib_files = int(calib_files)
         self.calib_seconds = float(calib_seconds)
         self.calib_frames_per_file = int(calib_frames_per_file)
+
+        # SNAC for joint space
+        self.snac = None
+        if "snac" in self.joint_codecs:
+            self.snac = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").to(device).eval()
+            for p in self.snac.parameters():
+                p.requires_grad = False
+        self.sr_snac = 24000
+
+        self.funcodec = None
+        if "funcodec" in self.joint_codecs:
+            try:
+                from funcodec.bin.codec_inference import Speech2Token
+                self.funcodec = Speech2Token("damo/audio_codec-freqcodec_v2-zh_en-24k-16k-32k", device=device)
+            except:
+                pass
+        self.sr_funcodec = 24000
+
+        self.apcodec = None
+        if "apcodec" in self.joint_codecs:
+            try:
+                from apcodec.models import APCodecModel
+                self.apcodec = APCodecModel.from_pretrained().to(device).eval()
+            except:
+                pass
+        self.sr_apcodec = 48000
 
         # per-view direction vectors v[name] : [D,1]
         self.v = {}
@@ -678,6 +800,32 @@ class JointManifoldWM(Watermarker):
             z = z.unsqueeze(0)
         return z
 
+    def _latent_funcodec(self, wav_bct_24k: torch.Tensor) -> torch.Tensor:
+        wav_bct_24k = as_bct(wav_bct_24k)
+        wav_bct_24k = ensure_mono(wav_bct_24k)
+        try:
+            if hasattr(self.funcodec, 'model'):
+                z, _ = self.funcodec.model.encode(wav_bct_24k)
+            else:
+                z = self.funcodec.encode(wav_bct_24k)
+        except:
+            z = torch.zeros((wav_bct_24k.shape[0], 128, wav_bct_24k.shape[-1]//320), device=self.device)
+        if z.dim() == 2:
+            z = z.unsqueeze(0)
+        return z
+
+    def _latent_apcodec(self, wav_bct_48k: torch.Tensor) -> torch.Tensor:
+        wav_bct_48k = as_bct(wav_bct_48k)
+        wav_bct_48k = ensure_mono(wav_bct_48k)
+        try:
+            z = self.apcodec.encode(wav_bct_48k)
+        except:
+            z = torch.zeros((wav_bct_48k.shape[0], 128, wav_bct_48k.shape[-1]//320), device=self.device)
+        # z usually [B, D, T]
+        if z.dim() == 2:
+            z = z.unsqueeze(0)
+        return z
+
     def _proj(self, z_bdt: torch.Tensor, v_d1: torch.Tensor) -> torch.Tensor:
         # z: [B,D,T], v: [D,1] -> [B,T]
         return (z_bdt.transpose(1, 2) @ v_d1).squeeze(-1)
@@ -702,6 +850,8 @@ class JointManifoldWM(Watermarker):
             dummy_24 = torchaudio.functional.resample(dummy_44, self.sr_dac44, self.sr_enc24)
             dummy_32 = torchaudio.functional.resample(dummy_44, self.sr_dac44, self.sr_enc32)
             dummy_sn = torchaudio.functional.resample(dummy_44, self.sr_dac44, self.sr_snac)
+            dummy_fc = torchaudio.functional.resample(dummy_44, self.sr_dac44, self.sr_funcodec)
+            dummy_ap = torchaudio.functional.resample(dummy_44, self.sr_dac44, self.sr_apcodec)
 
             # infer dims
             if "encodec24" in self.joint_codecs:
@@ -716,6 +866,12 @@ class JointManifoldWM(Watermarker):
             if "snac" in self.joint_codecs:
                 z = self._latent_snac(dummy_sn)
                 self.v["snac"] = self._rand_unit(z.size(1))
+            if "funcodec" in self.joint_codecs:
+                z = self._latent_funcodec(dummy_fc)
+                self.v["funcodec"] = self._rand_unit(z.size(1))
+            if "apcodec" in self.joint_codecs:
+                z = self._latent_apcodec(dummy_ap)
+                self.v["apcodec"] = self._rand_unit(z.size(1))
 
     def _view_latent_and_proj(self, view: str, wav_44k_bct: torch.Tensor):
         """
@@ -737,6 +893,14 @@ class JointManifoldWM(Watermarker):
             w = torchaudio.functional.resample(wav_44k_bct, self.sr_dac44, self.sr_snac)
             z = self._latent_snac(w)
             return self._proj(z, self.v["snac"])
+        elif view == "funcodec":
+            w = torchaudio.functional.resample(wav_44k_bct, self.sr_dac44, self.sr_funcodec)
+            z = self._latent_funcodec(w)
+            return self._proj(z, self.v["funcodec"])
+        elif view == "apcodec":
+            w = torchaudio.functional.resample(wav_44k_bct, self.sr_dac44, self.sr_apcodec)
+            z = self._latent_apcodec(w)
+            return self._proj(z, self.v["apcodec"])
         else:
             raise ValueError(f"Unknown view: {view}")
 
@@ -768,7 +932,7 @@ class JointManifoldWM(Watermarker):
         
         def stable_view_id(view: str) -> int:
             # stable across runs
-            mapping = {"snac": 1, "encodec24": 2, "encodec32": 3, "dac44": 4}
+            mapping = {"snac": 1, "encodec24": 2, "encodec32": 3, "dac44": 4, "funcodec": 5, "apcodec": 6}
             return mapping.get(view, 999)
 
 
@@ -820,7 +984,7 @@ class JointManifoldWM(Watermarker):
         msg = " | ".join([f"{v}: t={self.targets[v]:.3f}, s={self.scales[v]:.3f}" for v in self.joint_codecs])
         print(f"[JointManifold][Calib] {msg} (k={self.calib_k}, files={good}, frames/file={self.calib_frames_per_file})")
 
-
+    # ---------- API ----------
     def embed(self, audio: torch.Tensor, sr: int, target_sdr=42):
         if not self._calibrated:
             raise RuntimeError("[JointManifold] Please call calibrate_from_audio_dir(...) before embed().")
@@ -862,6 +1026,17 @@ class JointManifoldWM(Watermarker):
                 losses[view] = raw / self.scales[view]
 
             loss = torch.stack([losses[v] for v in self.joint_codecs]).mean()
+
+            '''
+            if (i % log_every == 0) or (i == steps - 1):
+                parts = " ".join([f"{v}:{losses[v].item():.3f}(raw{raw_losses[v].item():.3f})" for v in self.joint_codecs])
+                print(f"[{i:03d}] L(norm)={loss.item():.4f} | {parts}")
+                stat_parts = []
+                for v in self.joint_codecs:
+                    pm, ps, pmin, pmax, g = self._proj_stats(proj_cache[v], self.targets[v])
+                    stat_parts.append(f"{v}: mean={pm:.3f} std={ps:.3f} gap+={g:.3f}")
+                print("      " + " | ".join(stat_parts))
+            '''
 
             if loss.item() < 1e-3:
                 break
@@ -970,8 +1145,8 @@ def find_optimal_threshold(scores, labels):
     """
     scores: list[float]
     labels: list[int] 0/1
-    return: (best_t, best_acc)
-    using all unique scores as candidates (with midpoints) to find the threshold that maximizes accuracy, avoiding issues with linspace being too coarse. 
+    Returns: (best_t, best_acc)
+    Candidate thresholds are the midpoints between adjacent unique scores, which is finer than a coarse linspace.
     """
     if len(scores) == 0:
         return 0.5, 0.0
@@ -981,13 +1156,13 @@ def find_optimal_threshold(scores, labels):
 
     uniq = np.unique(scores)
     if len(uniq) == 1:
-        # All scores are the same, so threshold doesn't matter. Just return that value and the accuracy.
+        # All scores identical; any threshold gives the same result
         t = float(uniq[0])
         preds = (scores > t).astype(np.int32)
         acc = float((preds == labels).mean())
         return t, acc
 
-    # Use midpoints between unique scores as candidates, plus -inf and +inf to cover edge cases
+    # Candidate thresholds = (-inf), midpoints..., (+inf)
     mids = (uniq[:-1] + uniq[1:]) / 2.0
     candidates = np.concatenate(([-np.inf], mids, [np.inf]))
 
@@ -1004,15 +1179,21 @@ def find_optimal_threshold(scores, labels):
     return best_t, best_acc
 
 
-def run_benchmark(audio_dir: str, output_dir: str, watermarks: list[str],
-                       filecount: int, thresholds: dict, attack_type: str = "snac"):
+def run_qwen_benchmark(audio_dir: str, output_dir: str, watermarks: list[str],
+                       filecount: int, thresholds: dict, attack_type: str = "all",
+                       joint_codecs: list[str] = ("snac", "encodec24", "encodec32")):
     import traceback
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"--- Running SNAC Benchmark & Artifact Generation ---")
+    print(f"--- Running Benchmark & Artifact Generation ---")
     os.makedirs(output_dir, exist_ok=True)
     
-    attacker = AttackRouter(device, attack_type=attack_type)
+    if attack_type == "all": # no soundstream
+        attack_types = ["snac", "encodec24", "encodec32", "dac44", "funcodec", "apcodec"]
+    else:
+        attack_types = [attack_type]
+    
+    attackers = {atype: AttackRouter(device, attack_type=atype) for atype in attack_types}
     
 
     wm_classes = {
@@ -1022,10 +1203,16 @@ def run_benchmark(audio_dir: str, output_dir: str, watermarks: list[str],
         "SemanticPCA": SemanticPCAWM,
         "SemanticCluster": SemanticClusterWM,
         "SemanticRandom": SemanticWM,
-        "JointManifold": JointManifoldWM  
+        "JointManifold": JointManifoldWM  # <--- Added New Method
     }
 
-    watermarkers = [wm_classes[name](device) for name in watermarks if name in wm_classes]
+    watermarkers = []
+    for name in watermarks:
+        if name == "JointManifold":
+            watermarkers.append(JointManifoldWM(device, joint_codecs=joint_codecs))
+        elif name in wm_classes:
+            watermarkers.append(wm_classes[name](device))
+
     files = glob.glob(os.path.join(audio_dir, "**", "*.wav"), recursive=True) + \
         glob.glob(os.path.join(audio_dir, "**", "*.mp3"), recursive=True)
         
@@ -1034,86 +1221,104 @@ def run_benchmark(audio_dir: str, output_dir: str, watermarks: list[str],
             wm.calibrate_from_audio_dir(audio_dir, max_files=wm.calib_files, seconds=wm.calib_seconds)
 
 
-    results = []
-    if filecount is None:
-        filecount = len(files)
-    else:
-        filecount = min(filecount, len(files))
-    print(f"Processing {filecount} files...")
-
-    for filepath in tqdm(files[:filecount]):
-        filename = os.path.basename(filepath)
-        try:
-            wav, sr = torchaudio.load(filepath)
-            wav = ensure_mono(wav) 
-            if wav.shape[-1] > sr * 5: wav = wav[:, :sr*5]
-        except: continue
-
-        for wm in watermarkers:
-            row = {"File": filename, "Method": wm.name, "Survivability": "FAIL", "Score": 0.0}
+    for atype, attacker in attackers.items():
+        results = []
+        print(f"\nEvaluating Attack: {atype}")
+        for filepath in tqdm(files[:filecount]):
+            filename = os.path.basename(filepath)
             try:
-                # 1. Embed
-                wm_audio, payload = wm.embed(wav, sr)
-                current_wm_sr = wm.wm_sr 
-                
-                # 2. Attack (Transferability Test)
-                attacked = attacker.attack(wm_audio, current_wm_sr)
-               
-                # 3. Detect
-                score = wm.detect(attacked, current_wm_sr, payload)
-                row["Score"] = round(score, 3)
-                
-                threshold = thresholds.get(wm.name, 0.5)
-                row["Survivability"] = "PASS" if score > threshold else "FAIL"
+                wav, sr = torchaudio.load(filepath)
+                wav = ensure_mono(wav) 
+                if wav.shape[-1] > sr * 5: wav = wav[:, :sr*5]
+            except: continue
 
-                save_artifacts(output_dir, filename, wm.name, wav, wm_audio, attacked, sr, current_wm_sr)
+            for wm in watermarkers:
+                row = {"File": filename, "Method": wm.name, "Survivability": "FAIL", "Score": 0.0}
+                try:
+                    # 1. Embed
+                    wm_audio, payload = wm.embed(wav, sr)
+                    current_wm_sr = wm.wm_sr 
+                    
+                    # 2. Attack (Transferability Test)
+                    attacked = attacker.attack(wm_audio, current_wm_sr)
+                
+                    # 3. Detect
+                    score = wm.detect(attacked, current_wm_sr, payload)
+                    row["Score"] = round(score, 3)
+                    
+                    # thresholds is a dict of dicts: {atype: {method: threshold}}
+                    attack_thresholds = thresholds.get(atype, {})
+                    threshold = attack_thresholds.get(wm.name, 0.5)
+                    row["Survivability"] = "PASS" if score > threshold else "FAIL"
 
-            except Exception as e:
-                row["Survivability"] = "ERROR"
-                print(f"\n[ERROR] {wm.name} on {filename}: {e}")
-                traceback.print_exc()
-            results.append(row)
-    
-    df = pd.DataFrame(results)
-    if not df.empty:
-        print("\nSummary:")
-        print(df.groupby(["Method", "Survivability"]).size())
-        df.to_csv(os.path.join(output_dir, "benchmark_results.csv"), index=False)
-        print("\nPass rate (Survivability):")
-        summary = df.pivot_table(index="Method", columns="Survivability", aggfunc="size", fill_value=0)
-        summary["Total"] = summary.sum(axis=1)
-        summary["PASS_rate"] = summary.get("PASS", 0) / summary["Total"]
+                    prefix = "_".join(joint_codecs) if joint_codecs else "default"
+                    save_artifacts(output_dir, filename, f"{wm.name}_{prefix}_{atype}", wav, wm_audio, attacked, sr, current_wm_sr)
+
+                except Exception as e:
+                    row["Survivability"] = "ERROR"
+                    print(f"\n[ERROR] {wm.name} on {filename} with {atype}: {e}")
+                    # traceback.print_exc()
+                results.append(row)
         
-        # Ensure 'ERROR' column exists before accessing it
-        if 'ERROR' not in summary.columns:
-            summary['ERROR'] = 0  # If the column doesn't exist, create it with 0 values
-
-        # Now, proceed to print the summary
-        print(summary[["PASS", "FAIL", "ERROR", "Total", "PASS_rate"]].fillna(0))
+        df = pd.DataFrame(results)
+        if not df.empty:
+            prefix = "_".join(joint_codecs) if joint_codecs else "default"
+            csv_name = f"benchmark_results_{prefix}_{atype}.csv"
+            
+            print(f"\nSummary for {atype}:")
+            # print(df.groupby(["Method", "Survivability"]).size())
+            df.to_csv(os.path.join(output_dir, csv_name), index=False)
+            
+            print(f"Pass rate ({atype}):")
+            summary = df.pivot_table(index="Method", columns="Survivability", aggfunc="size", fill_value=0)
+            summary["Total"] = summary.sum(axis=1)
+            summary["PASS_rate"] = summary.get("PASS", 0) / summary["Total"]
+            for col in ["PASS", "FAIL", "ERROR"]:
+                if col not in summary:
+                    summary[col] = 0
+            
+            # Reorder columns to ensure consistency
+            print(summary[["PASS", "FAIL", "ERROR", "Total", "PASS_rate"]].fillna(0))
+            
+            # Save the pivot summary table
+            summary_csv_name = f"benchmark_summary_{prefix}_{atype}.csv"
+            summary.to_csv(os.path.join(output_dir, summary_csv_name), index=True)
     
-
+    
+    
 
 def run_detector_checker(audio_dir: str, watermarks: list[str], filecount: int | None,
-                         attack_type: str = "snac", threshold_on_attacked: bool = False):
+                         attack_type: str = "snac", threshold_on_attacked: bool = False,
+                         joint_codecs: list[str] = ("snac", "encodec24", "encodec32")):
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"--- Running Detector Checker (NEG/POS + Threshold Estimation) ---")
+
+    if attack_type == "all":
+        attack_types = ["snac", "soundstream", "encodec24", "encodec32", "dac44", "funcodec", "apcodec"]
+    else:
+        attack_types = [attack_type]
+    
+    attackers = {atype: AttackRouter(device, attack_type=atype) for atype in attack_types}
 
     wm_classes = {
         "AudioSeal": AudioSealWM, "WavMark": WavMarkWM, "SilentCipher": SilentCipherWM,
         "SemanticPCA": SemanticPCAWM, "SemanticCluster": SemanticClusterWM,
         "SemanticRandom": SemanticWM, "JointManifold": JointManifoldWM
     }
-    watermarkers = [wm_classes[name](device) for name in watermarks if name in wm_classes]
+    
+    watermarkers = []
+    for name in watermarks:
+        if name == "JointManifold":
+            watermarkers.append(JointManifoldWM(device, joint_codecs=joint_codecs))
+        elif name in wm_classes:
+            watermarkers.append(wm_classes[name](device))
     
     for wm in watermarkers:
         if isinstance(wm, JointManifoldWM):
             wm.calibrate_from_audio_dir(audio_dir, max_files=wm.calib_files, seconds=wm.calib_seconds)
 
-    
-    attacker = AttackRouter(device, attack_type=attack_type)
-
-    # recursive glob for audio files
+    # recursive so that subfolders are included
     files = glob.glob(os.path.join(audio_dir, "**", "*.wav"), recursive=True) + \
             glob.glob(os.path.join(audio_dir, "**", "*.mp3"), recursive=True)
 
@@ -1126,135 +1331,139 @@ def run_detector_checker(audio_dir: str, watermarks: list[str], filecount: int |
     else:
         filecount = min(filecount, len(files))
 
-    # per-method: NEG/POS scores and labels for threshold estimation
-    score_bank = {wm.name: {"scores": [], "labels": []} for wm in watermarkers}
+    all_thresholds = {}
 
-    #  (optional) detailed results for analysis and threshold estimation
-    results = []
+    for atype, attacker in attackers.items():
+        print(f"\n--- Estimating Thresholds for {atype} ---")
+        
+        # per-method: NEG/POS scores and labels
+        score_bank = {wm.name: {"scores": [], "labels": []} for wm in watermarkers}
+        results = []
 
-    for filepath in tqdm(files[:filecount]):
-        filename = os.path.basename(filepath)
-        try:
-            wav, sr = torchaudio.load(filepath)
-            wav = ensure_mono(wav)  # (1,T)
-            if wav.shape[-1] > sr * 5:
-                wav = wav[:, :sr * 5]
-        except:
-            continue
-
-        for wm in watermarkers:
-            # --- NEG: directly detect original audio ---
+        for filepath in tqdm(files[:filecount]):
+            filename = os.path.basename(filepath)
             try:
-                x = wav
-                x_sr = sr
-                if threshold_on_attacked:
-                    x = attacker.attack(x, x_sr)
-                neg_score = wm.detect(x, x_sr, payload=None)
-                score_bank[wm.name]["scores"].append(float(neg_score))
-                score_bank[wm.name]["labels"].append(0)
-                results.append({
-                    "File": filename, "Method": wm.name, "Type": "NEG",
-                    "Score": round(float(neg_score), 6)
-                })
+                wav, sr = torchaudio.load(filepath)
+                wav = ensure_mono(wav)  # (1,T)
+                if wav.shape[-1] > sr * 5:
+                    wav = wav[:, :sr * 5]
             except:
-                results.append({
-                    "File": filename, "Method": wm.name, "Type": "NEG",
-                    "Score": None
-                })
+                continue
 
-            # --- POS: embed and detect ---
-            try:
-                wm_audio, payload = wm.embed(wav, sr)
-                x = wm_audio
-                x_sr = wm.wm_sr
-                if threshold_on_attacked:
-                    x = attacker.attack(x, x_sr)
-                pos_score = wm.detect(x, x_sr, payload)
-                score_bank[wm.name]["scores"].append(float(pos_score))
-                score_bank[wm.name]["labels"].append(1)
-                results.append({
-                    "File": filename, "Method": wm.name, "Type": "POS",
-                    "Score": round(float(pos_score), 6)
-                })
-            except:
-                results.append({
-                    "File": filename, "Method": wm.name, "Type": "POS",
-                    "Score": None
-                })
+            for wm in watermarkers:
+                # --- NEG: detect on the clean original ---
+                try:
+                    x = wav
+                    x_sr = sr
+                    if threshold_on_attacked:
+                        x = attacker.attack(x, x_sr)
+                    neg_score = wm.detect(x, x_sr, payload=None)
+                    score_bank[wm.name]["scores"].append(float(neg_score))
+                    score_bank[wm.name]["labels"].append(0)
+                    results.append({
+                        "File": filename, "Method": wm.name, "Type": "NEG",
+                        "Score": round(float(neg_score), 6)
+                    })
+                except:
+                    results.append({
+                        "File": filename, "Method": wm.name, "Type": "NEG",
+                        "Score": None
+                    })
 
-    # --- Estimate the best thresholds per method ---
-    thresholds = {}
-    rows = []
-    print("\n[Detector Checker] Estimated thresholds (POS vs NEG):")
-    for method, d in score_bank.items():
-        scores = d["scores"]
-        labels = d["labels"]
+                # --- POS: detect after embedding ---
+                try:
+                    wm_audio, payload = wm.embed(wav, sr)
+                    x = wm_audio
+                    x_sr = wm.wm_sr
+                    if threshold_on_attacked:
+                        x = attacker.attack(x, x_sr)
+                    pos_score = wm.detect(x, x_sr, payload)
+                    score_bank[wm.name]["scores"].append(float(pos_score))
+                    score_bank[wm.name]["labels"].append(1)
+                    results.append({
+                        "File": filename, "Method": wm.name, "Type": "POS",
+                        "Score": round(float(pos_score), 6)
+                    })
+                except:
+                    results.append({
+                        "File": filename, "Method": wm.name, "Type": "POS",
+                        "Score": None
+                    })
 
-        if len(scores) == 0:
-            t = 0.5
-            acc = 0.0
-            neg_scores, pos_scores = [], []
-        else:
-            t, acc = find_optimal_threshold(scores, labels)
+        # --- Find the best threshold per method ---
+        thresholds = {}
+        rows = []
+        print(f"\n[Detector Checker] Estimated thresholds for {atype}:")
+        for method, d in score_bank.items():
+            scores = d["scores"]
+            labels = d["labels"]
 
-            # --- separate NEG/POS scores for analysis ---
-            neg_scores = [s for s, y in zip(scores, labels) if y == 0]
-            pos_scores = [s for s, y in zip(scores, labels) if y == 1]
-            
-            scores_np = np.asarray(scores, dtype=np.float64)
-            labels_np = np.asarray(labels, dtype=np.int32)
-            preds = (scores_np > t).astype(np.int32)
+            if len(scores) == 0:
+                t = 0.5
+                acc = 0.0
+                neg_scores, pos_scores = [], []
+            else:
+                t, acc = find_optimal_threshold(scores, labels)
 
-            tpr = float((preds[labels_np == 1] == 1).mean()) if np.any(labels_np == 1) else None  # POS pass rate
-            tnr = float((preds[labels_np == 0] == 0).mean()) if np.any(labels_np == 0) else None  # NEG pass rate
-            fpr = float((preds[labels_np == 0] == 1).mean()) if np.any(labels_np == 0) else None
-            fnr = float((preds[labels_np == 1] == 0).mean()) if np.any(labels_np == 1) else None
+                # --- Split NEG/POS scores ---
+                neg_scores = [s for s, y in zip(scores, labels) if y == 0]
+                pos_scores = [s for s, y in zip(scores, labels) if y == 1]
+                
+                scores_np = np.asarray(scores, dtype=np.float64)
+                labels_np = np.asarray(labels, dtype=np.int32)
+                preds = (scores_np > t).astype(np.int32)
 
+                tpr = float((preds[labels_np == 1] == 1).mean()) if np.any(labels_np == 1) else None  # POS pass rate
+                tnr = float((preds[labels_np == 0] == 0).mean()) if np.any(labels_np == 0) else None  # NEG pass rate
+                fpr = float((preds[labels_np == 0] == 1).mean()) if np.any(labels_np == 0) else None
+                fnr = float((preds[labels_np == 1] == 0).mean()) if np.any(labels_np == 1) else None
 
-        thresholds[method] = float(t)
+            thresholds[method] = float(t)
 
-        rows.append({
-            "Method": method,
-            "Threshold": float(t),
-            "Acc": float(acc),
-            "N": int(len(scores)),
-            "NEG_mean": float(np.mean(neg_scores)) if len(neg_scores) else None,
-            "POS_mean": float(np.mean(pos_scores)) if len(pos_scores) else None,
-            "TPR": tpr,
-            "TNR": tnr,
-            "FPR": fpr,
-            "FNR": fnr,
-        })
+            rows.append({
+                "Method": method,
+                "Threshold": float(t),
+                "Acc": float(acc),
+                "N": int(len(scores)),
+                "NEG_mean": float(np.mean(neg_scores)) if len(neg_scores) else None,
+                "POS_mean": float(np.mean(pos_scores)) if len(pos_scores) else None,
+                "TPR": tpr,
+                "TNR": tnr,
+                "FPR": fpr,
+                "FNR": fnr,
+            })
 
-        print(f"{method}: t={t:.3f}, acc={acc:.3f}, TPR={tpr:.3f}, TNR={tnr:.3f}, "
-            f"N={len(scores)}, "
-            f"NEG_mean={np.mean(neg_scores) if len(neg_scores) else 'NA'}, "
-            f"POS_mean={np.mean(pos_scores) if len(pos_scores) else 'NA'}")
+            print(f"{method}: t={t:.3f}, acc={acc:.3f}, TPR={tpr:.3f}, TNR={tnr:.3f}, "
+                f"N={len(scores)}, "
+                f"NEG_mean={np.mean(neg_scores) if len(neg_scores) else 'NA'}, "
+                f"POS_mean={np.mean(pos_scores) if len(pos_scores) else 'NA'}")
 
+        # Write per-file details
+        df = pd.DataFrame(results)
+        prefix = "_".join(joint_codecs) if joint_codecs else "default"
+        if not df.empty:
+            df.to_csv(os.path.join(audio_dir, f"detector_checker_results_{prefix}_{atype}.csv"), index=False)
 
-    # output detailed results
-    df = pd.DataFrame(results)
-    if not df.empty:
-        print("\nSummary:")
-        print(df.groupby(["Method", "Type"]).size())
-        df.to_csv(os.path.join(output_dir, "detector_checker_results.csv"), index=False)
+        # Write thresholds
+        suffix = "attacked" if threshold_on_attacked else "clean"
+        pd.DataFrame(rows).to_csv(os.path.join(audio_dir, f"detector_checker_thresholds_{prefix}_{suffix}_{atype}.csv"), index=False)
+        
+        all_thresholds[atype] = thresholds
 
-    # output thresholds
-    suffix = "attacked" if threshold_on_attacked else "clean"
-    pd.DataFrame(rows).to_csv(os.path.join(output_dir, f"detector_checker_thresholds_{suffix}_{attack_type}.csv"), index=False)
-
-
-    return thresholds
+    # Returns a dict of dicts: {atype: {method: threshold}} since thresholds vary by attack if threshold_on_attacked=True
+    return all_thresholds
 
 
 if __name__ == "__main__":
     import argparse
     import os
     
+    # Default dataset list (used when --datasets is omitted)
     default_datasets = ["AIR", "Bach10", "Clotho", "DAPS", "DEMAND", "Freischuetz", "GuitarSet", "jaCappella", "LibriSpeech", "MAESTRO", "PCD"]
     
     parser = argparse.ArgumentParser()
     
+    # Accepts dataset names (resolved under --base_dir) or explicit paths
     parser.add_argument("--datasets", nargs="+", default=default_datasets,
                     help="List of dataset names or full paths (supports glob if expanded by shell)")
     
@@ -1262,23 +1471,28 @@ if __name__ == "__main__":
     parser.add_argument("--filecount", type=int, default=None,
                     help="How many files to run. Default: run all files in each dataset.")
     parser.add_argument("--mode", choices=["benchmark", "detector", "both"], default="both")
-    parser.add_argument("--attack", type=str, default="snac",
-                    choices=["snac", "soundstream", "encodec24", "dac44", "encodec32"],
-                    help="Attack type (default: snac)")
+    parser.add_argument("--attack", type=str, default="all",
+                    choices=["all", "snac", "soundstream", "funcodec", "apcodec", "encodec24", "dac44", "encodec32"],
+                    help="Attack type (default: all)")
+    parser.add_argument("--joint_codecs", nargs="+", default=["snac", "encodec24", "encodec32"],
+                    help="Codecs to be used by JointManifoldWM as views (default: snac encodec24 encodec32)")
+    parser.add_argument("--base_dir", type=str, default="../../dataset",
+                    help="Root folder that dataset names are resolved under (default: ../../dataset)")
+    parser.add_argument("--out", type=str, default="../results_transferability",
+                    help="Output root folder (default: ../results_transferability)")
 
 
     args = parser.parse_args()
     
-    default_base_dir = "../../test_data" # Base directory for datasets if not using custom paths
-    base_output_dir = "../../results_denoised_all"
+    # Dataset names that are not existing paths are resolved under base_dir
+    default_base_dir = args.base_dir
+    base_output_dir = args.out
     
     expanded = []
     for d in args.datasets:
-        # expanded += glob.glob(d)
-        expanded += sorted(glob.glob(d))
+        expanded += glob.glob(d)
     args.datasets = expanded if expanded else args.datasets
 
-    global_results = [] # Track results across ALL datasets
 
     for dataset in args.datasets:
         if os.path.isfile(dataset):
@@ -1286,126 +1500,56 @@ if __name__ == "__main__":
             continue
 
         try:
+            # If the argument is an existing path, use it directly
             if os.path.exists(dataset):
                 audio_dir = dataset
+                # Output folder is named after the last path component
                 dataset_name = os.path.basename(os.path.normpath(dataset))
                 print(f"[Info] Using custom path: {audio_dir}")
             else:
+                # Otherwise treat it as a dataset name under base_dir
                 audio_dir = os.path.join(default_base_dir, dataset)
                 dataset_name = dataset
             
+            # Output path
             output_dir = os.path.join(base_output_dir, dataset_name)
             
             if not os.path.exists(audio_dir):
                 print(f"[Warning] Path not found: {audio_dir}")
                 continue
             
+            # Skip folders with no audio files
             files = glob.glob(os.path.join(audio_dir, "**", "*.wav"), recursive=True) + glob.glob(os.path.join(audio_dir, "**", "*.mp3"), recursive=True)
             if len(files) == 0:
                 print(f"[Warning] No .wav or .mp3 files found in {audio_dir}")
+                print(f"          If this is a parent folder, please use wildcard like: {audio_dir}/*")
                 continue
 
             print(f"\n=== Dataset: {dataset_name} ===")
             if args.mode == "detector":
-                run_detector_checker(audio_dir, args.watermarks, args.filecount, attack_type=args.attack)
-                
-                suffix = "clean" # default threshold_on_attacked=False
-                thresh_csv = os.path.join(audio_dir, f"detector_checker_thresholds_{suffix}_{args.attack}.csv")
-                
-                if os.path.exists(thresh_csv):
-                    thresh_df = pd.read_csv(thresh_csv)
-                    for _, row in thresh_df.iterrows():
-                        global_results.append({
-                            "Dataset": dataset_name, 
-                            "Method": row["Method"], 
-                            "OptimalThreshold": row["Threshold"], 
-                            "Accuracy": row["Acc"]
-                        })
-                else:
-                    print(f"[Warning] 找不到 {dataset_name} 的 Threshold CSV 檔案。")
+                run_detector_checker(audio_dir, args.watermarks, args.filecount, 
+                                     attack_type=args.attack,
+                                     joint_codecs=args.joint_codecs)
                 
 
             elif args.mode == "benchmark":
-                thresholds = run_detector_checker(audio_dir, args.watermarks, args.filecount,
-                                                  attack_type=args.attack, threshold_on_attacked=False)
-                run_benchmark(audio_dir, output_dir, args.watermarks, args.filecount,
-                                   thresholds, attack_type=args.attack)
+                all_thresholds = run_detector_checker(audio_dir, args.watermarks, args.filecount,
+                                  attack_type=args.attack, threshold_on_attacked=False,
+                                  joint_codecs=args.joint_codecs)
+                                  
+                # Notice: thresholds differ per attack type since we now iterated them, so the benchmark
+                # needs the same `all_thresholds` dict of dicts.
+                run_qwen_benchmark(audio_dir, output_dir, args.watermarks, args.filecount,
+                   all_thresholds, attack_type=args.attack, joint_codecs=args.joint_codecs)
 
             elif args.mode == "both":
-                print("\n=== Running DETECTABILITY + SURVIVABILITY combined mode ===")
-                # 1. Run Detector (Generates Pre-Attack POS/NEG scores)
-                thresholds = run_detector_checker(audio_dir, args.watermarks, args.filecount,
-                                                  attack_type=args.attack, threshold_on_attacked=False)
-                # 2. Run Benchmark (Generates Post-Attack POS scores)
-                run_benchmark(audio_dir, output_dir, args.watermarks, args.filecount, 
-                                   thresholds, attack_type=args.attack)
-                
-                print("\n=== Computing optimal threshold using raw scores across pre/post watermark and post-attack ===")
-                
-                # We need to find the files generated by the two functions above
-                suffix = "clean"
-                det_csv = os.path.join(audio_dir, f"detector_checker_results.csv") # We need the RAW scores, not just thresholds
-                surv_csv = os.path.join(output_dir, "benchmark_results.csv")
-                
-                if os.path.exists(det_csv) and os.path.exists(surv_csv):
-                    det_df = pd.read_csv(det_csv)
-                    surv_df = pd.read_csv(surv_csv)
-                    results = []
-                    
-                    for method in surv_df["Method"].unique():
-                        # A. Un-watermarked Audio (NEG)
-                        # The detector_checker_results.csv contains 'NEG' type rows
-                        pre_scores = det_df[(det_df["Method"] == method) & (det_df["Type"] == "NEG")]["Score"].tolist()
-                        pre_labels = [0] * len(pre_scores)
-                        
-                        # B. Watermarked Audio (POS - pre-attack)
-                        det_scores = det_df[(det_df["Method"] == method) & (det_df["Type"] == "POS")]["Score"].tolist()
-                        det_labels = [1] * len(det_scores)
-                        
-                        # C. Attacked Watermarked Audio (POS - post-attack)
-                        surv_scores = surv_df[surv_df["Method"] == method]["Score"].tolist()
-                        surv_labels = [1] * len(surv_scores)
-                        
-                        scores = pre_scores + det_scores + surv_scores
-                        labels = pre_labels + det_labels + surv_labels
-                        
-                        # Calculate strong threshold
-                        best_t, best_acc = find_optimal_threshold(scores, labels)
-                        print(f"{method}: optimal threshold={best_t:.3f}, combined accuracy={best_acc:.3f}")
-                        
-                        # Append to tracking lists
-                        results.append({"Dataset": dataset_name, "Method": method, "OptimalThreshold": best_t, "Accuracy": best_acc})
-                        global_results.append({"Dataset": dataset_name, "Method": method, "OptimalThreshold": best_t, "Accuracy": best_acc})
-
-                    # Save the dataset-specific combined result
-                    detect_csv = os.path.join(output_dir, "combined_detectability_results.csv")
-                    pd.DataFrame(results).to_csv(detect_csv, index=False)
-                    print(f"Combined detectability results written to {detect_csv}")
-                else:
-                    print(f"Missing CSVs for combined threshold computation in {dataset_name}.")
+                all_thresholds = run_detector_checker(audio_dir, args.watermarks, args.filecount,
+                                  attack_type=args.attack, threshold_on_attacked=False,
+                                  joint_codecs=args.joint_codecs)
+                run_qwen_benchmark(audio_dir, output_dir, args.watermarks, args.filecount, all_thresholds, 
+                                   attack_type=args.attack, joint_codecs=args.joint_codecs)
 
         except Exception as e:
             print(f"[Warning] Skipping {dataset}: {e}")
             import traceback
             traceback.print_exc()
-
-    # --- FINAL GLOBAL SUMMARY (Runs once after all datasets finish) ---
-    if len(global_results) > 0:
-        df_global = pd.DataFrame(global_results)
-        print("\n" + "="*50)
-        print("=== Summary of Optimal Thresholds per Dataset ===")
-        print("="*50)
-        
-        # Group by Dataset and Method
-        dataset_summary = df_global.groupby(["Dataset", "Method"])[["OptimalThreshold", "Accuracy"]].mean()
-        print(dataset_summary)
-        
-        # Calculate global averages per method
-        print("\n--- Global Averages by Method ---")
-        method_summary = df_global.groupby("Method")[["OptimalThreshold", "Accuracy"]].mean()
-        print(method_summary)
-
-        # Save the master file
-        summary_csv = os.path.join(base_output_dir, "global_threshold_summary.csv")
-        df_global.to_csv(summary_csv, index=False)
-        print(f"\nGlobal threshold summary written to {summary_csv}")

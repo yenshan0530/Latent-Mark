@@ -68,7 +68,7 @@ def cached_load_audio(fp: str) -> Tuple[torch.Tensor, int]:
 
     wav, sr = torchaudio.load(fp)
     wav = ensure_mono(wav)
-    wav = crop_loudest_segment(wav, sr, seconds=5.0)  # <- 只 cache 5 秒
+    wav = crop_loudest_segment(wav, sr, seconds=5.0)  # cache only the loudest 5 s
 
     # keep CPU tensor; most ops later move/resample anyway
     _AUDIO_CACHE[fp] = (wav, sr)
@@ -79,7 +79,7 @@ def cached_load_audio(fp: str) -> Tuple[torch.Tensor, int]:
 
 def clear_dataset_audio_cache():
     _AUDIO_CACHE.clear()
-    # 檔名列表 cache 留著也行；但你要更乾淨也可：
+    # The file-list cache could stay, but clear it for a clean per-dataset state
     # _FILELIST_CACHE.clear()
 
 
@@ -407,12 +407,12 @@ class SNACView(ViewModel):
 
     def _safe_encoder(self, w_bct):
         max_tries = 6
-        pad_step = 256 # 每次多補 256 點
+        pad_step = 256  # pad 256 more samples per retry
         
         last_err = None
         for i in range(max_tries):
             try:
-                # 嘗試加上額外的 Padding
+                # Retry with extra padding
                 if i > 0:
                     pad_amt = pad_step * i
                     w_curr = F.pad(w_bct, (0, pad_amt))
@@ -805,8 +805,8 @@ class SemanticPCAWM(Watermarker):
         super().__init__(device)
         self.name = "SemanticPCA"
         self.wm_sr = 24000 
-        snac_vm = load_view("snac_24", device)   # 走 _VIEW_CACHE
-        self.model = snac_vm.model               # 共用同一份 weights
+        snac_vm = load_view("snac_24", device)   # via _VIEW_CACHE
+        self.model = snac_vm.model               # share the same weights
         self.model.eval()
         for p in self.model.parameters():
             p.requires_grad = False
@@ -1195,6 +1195,11 @@ class AttackRouter:
 # ----------------------------
 # JointManifold WM (with detect + pass/fail)
 # ----------------------------
+def _stable_codec_seed(name: str) -> int:
+    """Process-independent seed for a codec view name (str hash is randomized per interpreter)."""
+    return sum((i + 1) * ord(ch) for i, ch in enumerate(name.lower())) % 10000
+
+
 class JointManifoldWM:
     def __init__(self, device: str, joint_codecs: list, wm_sr: int = 24000,
                  calib_k: float = 0.5, calib_files: int = 42, 
@@ -1220,7 +1225,7 @@ class JointManifoldWM:
             with torch.no_grad():
                 z = vm.latent(dummy)
             D = int(z.shape[1])
-            rng = np.random.RandomState(42 + abs(hash(c)) % 10000)
+            rng = np.random.RandomState(42 + _stable_codec_seed(c))
             v = rng.randn(D).astype(np.float32)
             v /= (np.linalg.norm(v) + 1e-12)
             self.v[c] = torch.tensor(v, device=self.device)
@@ -1571,12 +1576,7 @@ def run_one_experiment(
             try:
                 wav, sr = cached_load_audio(fp)
 
-                # --- baseline: clean+attack score (only needed for JointManifold delta) ---
                 clean_atk_score = None
-                if wm_name.lower() == "jointmanifold":
-                    wav_wm_sr = torchaudio.functional.resample(wav, sr, wm.wm_sr)   # (1,T) at wm_sr
-                    clean_attacked = attacker.attack(wav_wm_sr, wm.wm_sr)           # (1,T) at wm_sr
-                    clean_atk_score = float(wm.detect(clean_attacked, wm.wm_sr, payload=None))
 
                 # --- embed with OOM fallback ---
                 try:
@@ -1776,7 +1776,6 @@ def main():
         if ds_name in set(args.skip_datasets):
             print(f"[SKIP DATASET] {ds_name}")
             continue
-        base_output_dir = "../results_denoised"
         os.makedirs(os.path.join(base_output_dir, ds_name), exist_ok=True)
         
         ds_out_dir = os.path.join(base_output_dir, ds_name)

@@ -1,323 +1,223 @@
-
 # Watermark Research
 
-### Setup
-```
-conda create -n audio-watermark python=3.12
-conda activate audio-watermark
-pip install -r requirements.txt
-```
+Embedding, detection, and robustness benchmarks for Latent-Mark. All commands below are run from `watermark_research/src/`.
 
-```
-# Transferbility
-# Default
-conda env create -f environment.yml
-conda activate aw
-
-# conda
-conda create -n aw --file conda-spec.txt
-conda activate aw
-
-# pip only
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -r requirements.txt
-```
-
-### Datasets
-Download and prepare the datasets as described in `raw_bench`. Ensure that the datasets are organized under a common root directory (named as `../../test_dats/`) with subfolders for each dataset.
-
-
-### Watermark Testing (Single-Attacker Benchmark)
+## Setup
 
 ```bash
-cd watermark_research/src
-python watermark_testing.py \
-  --mode benchmark \
-  --datasets LibriSpeech Bach10 \
-  --watermarks SemanticCluster SemanticRandom SemanticPCA \
+# From the repository root
+conda env create -f watermark_research/environment.yml
+conda activate aw
+```
+
+Alternatives:
+
+```bash
+# Exact conda spec
+conda create -n aw --file watermark_research/conda-spec.txt
+conda activate aw
+
+# pip only (the raw_bench submodule must be checked out)
+python -m venv .venv && source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r watermark_research/requirements.txt
+```
+
+## Datasets
+
+Download the evaluation datasets by following the `raw_bench` submodule's README. Every script expects a root folder with one subfolder per dataset, for example:
+
+```
+dataset/
+├── AIR/
+├── Clotho/
+├── DAPS/
+├── LibriSpeech/
+└── ...
+```
+
+The default root is `../../dataset` relative to `src/`. Override it with `--base_dir`. `SilentCipher` needs its checkpoint at `raw_bench/wm_ckpts/silent_cipher/44_1_khz/73999_iteration`, which the submodule provides.
+
+## Watermarking methods (`--watermarks`)
+
+| Method | Paper name | Description |
+| --- | --- | --- |
+| `SemanticCluster` | Latent-Cluster | Shifts the SNAC latent along the axis between the two k-means centroids of the codebook (24 kHz) |
+| `SemanticPCA` | Latent-PCA | Shifts along the first principal component of the codebook |
+| `SemanticRandom` | Latent-Random | Shifts along a fixed random unit vector |
+| `JointManifold` | Latent-Joint | Jointly optimizes one perturbation across several codec latent spaces (Cross-Codec Optimization) |
+| `AudioSeal` | baseline | Neural additive watermark (16 kHz) |
+| `WavMark` | baseline | Spread-spectrum bit watermark (16 kHz) |
+| `SilentCipher` | baseline | Psychoacoustic watermark (44.1 kHz) |
+
+---
+
+## 1. Single-codec benchmark: `watermark_testing.py`
+
+Embeds each watermark, attacks with a SNAC 24 kHz encode-decode round trip, and detects. This is the Table 1 pipeline.
+
+```bash
+python watermark_testing.py --mode both \
+  --datasets LibriSpeech DAPS \
+  --watermarks SemanticCluster SemanticPCA SemanticRandom AudioSeal WavMark SilentCipher \
   --filecount 120
 ```
 
-#### What This Script Does
-
-For each dataset × watermark method combination, the script runs in three modes:
-
-- **`benchmark`**: Embeds a watermark, applies a SNAC codec roundtrip attack, then detects whether the watermark survived. Saves audio triplets and analysis plots.
-- **`detector`**: Embeds a watermark and detects it directly (no attack) to verify each method's baseline detectability.
-- **`both`**: Runs detector and benchmark sequentially, then computes the optimal detection threshold by combining pre-watermark, post-watermark, and post-attack scores.
-
-#### Watermarking Methods (`--watermarks`)
-
-| Method | Description |
-|---|---|
-| `AudioSeal` | Neural watermarking via additive perturbation (16 kHz) |
-| `WavMark` | Bit-level watermarking via spread-spectrum encoding (16 kHz) |
-| `SilentCipher` | Psychoacoustic watermarking (44.1 kHz); requires checkpoint at `raw_bench/wm_ckpts/silent_cipher/` |
-| `SemanticPCA` | Steers SNAC latent toward the top PCA direction of the codebook (24 kHz) |
-| `SemanticCluster` | Steers SNAC latent toward the K-Means inter-centroid axis (24 kHz) |
-| `SemanticRandom` | Steers SNAC latent toward a fixed random unit vector (24 kHz) |
-
-#### Attack
-
-The sole attacker is a full SNAC 24 kHz encode→decode roundtrip simulating the tokenization pipeline.
-
-#### All Arguments
-
 | Argument | Default | Description |
-|---|---|---|
-| `--mode` | `both` | `benchmark`, `detector`, or `both` |
-| `--datasets` | all 11 datasets | Dataset folder names under `../../dataset/` |
-| `--watermarks` | `SemanticCluster SemanticRandom SemanticPCA` | Watermarking methods to test |
-| `--filecount` | `50` | Number of audio files to process per dataset |
+| --- | --- | --- |
+| `--mode` | `both` | `detector` (embed and detect, no attack), `benchmark` (embed, attack, detect), or `both` (run detector then benchmark and compute the combined detection threshold) |
+| `--datasets` | all 11 | Dataset folder names under `--base_dir` |
+| `--watermarks` | `SemanticCluster SemanticRandom SemanticPCA` | Methods to test |
+| `--filecount` | `50` | Files per dataset |
+| `--base_dir` | `../../dataset` | Dataset root |
+| `--out` | `../results_snac` | Output root |
 
-#### Output Structure
-
-```
-../results_denoised/
-└── $dataset_name/
-    ├── benchmark_summary.txt      # Survivability counts per method
-    ├── benchmark_results.csv      # Per-file scores and PASS/FAIL
-    ├── combined_detectability_results.csv  # Optimal thresholds (--mode both)
-    └── $method_name/
-        └── $file_stem/
-            ├── 1_original.wav
-            ├── 2_watermarked.wav
-            ├── 3_lalm_attacked.wav
-            └── analysis_plot.png       # Waveform, spectrogram, and residual plots
-```
-
-For `--mode detector`, results are saved alongside the input audio:
+Output:
 
 ```
-../../dataset/$dataset_name/
-├── detector_checker_summary.txt
-└── detector_checker_results.csv
+$out/$dataset/
+├── qwen_benchmark_results.csv          # per-file scores and PASS/FAIL after the SNAC attack
+├── qwen_benchmark_summary.txt
+├── combined_detectability_results.csv  # optimal threshold and accuracy per method (--mode both)
+└── $method/$file_stem/
+    ├── 1_original.wav
+    ├── 2_watermarked.wav
+    ├── 3_lalm_attacked.wav
+    └── analysis_plot.png
+$out/global_threshold_summary.csv       # thresholds across all datasets (--mode both)
 ```
 
-#### Example
+Detector-mode CSVs (`detector_checker_results.csv`) are written next to the input audio.
+
+Summarize into a Table 1 layout:
 
 ```bash
-# Run full benchmark (attack + detect) on two datasets
-python watermark_testing.py --mode benchmark --datasets LibriSpeech Bach10 --watermarks SemanticCluster SemanticRandom --filecount 120
-
-# Check baseline detectability only (no attack)
-python watermark_testing.py --mode detector --datasets LibriSpeech --watermarks SemanticCluster SemanticRandom --filecount 120
-
-# Run both and compute optimal detection thresholds
-python watermark_testing.py --mode both --datasets LibriSpeech Bach10 --watermarks SemanticCluster SemanticRandom SemanticPCA --filecount 120
+python summarize_results.py --results_dir ../results_snac --out watermark_summary_table.csv
 ```
 
 ---
 
-### Joint Optimization (Transferability)
+## 2. Cross-codec optimization with a chosen attack: `transferbility_testing.py`
+
+Runs `JointManifold` over a selectable set of codec views and attacks with any of several codecs. Thresholds are estimated per attack from clean and watermarked scores before the attack is applied.
 
 ```bash
-cd watermark_research/src
-python watermark_testing_joint.py \
-  --mode both \
-  --datasets LibriSpeech Bach10 \
+python transferbility_testing.py --mode both \
+  --datasets LibriSpeech \
   --watermarks JointManifold SemanticCluster \
-  --filecount 50 \
-  --attack snac
+  --joint_codecs snac dac44 funcodec \
+  --attack all \
+  --filecount 120
 ```
-
-#### What This Script Does
-
-For each dataset × watermark method combination, the script supports three modes:
-
-- **`detector`**: Embeds a watermark and scores both clean (NEG) and watermarked (POS) audio to estimate optimal detection thresholds. No attack applied.
-- **`benchmark`**: First runs the detector phase to estimate thresholds, then applies a codec attack and checks whether the watermark survives.
-- **`both`**: Runs detector and benchmark sequentially, then merges NEG, pre-attack POS, and post-attack POS scores to compute a combined optimal threshold per method.
-
-The key addition over `watermark_testing.py` is the **`JointManifoldWM`** method and a configurable **`AttackRouter`** supporting multiple codec backends.
-
-#### Watermarking Methods (`--watermarks`)
-
-| Method | Description |
-|---|---|
-| `JointManifold` | Jointly optimizes a perturbation across multiple codec latent spaces (EnCodec 24k/32k, DAC 44k, SNAC). Requires `calibrate_from_audio_dir()` before use. |
-| `SemanticPCA` | Steers SNAC latent toward the top PCA direction of the codebook (24 kHz) |
-| `SemanticCluster` | Steers SNAC latent toward the K-Means inter-centroid axis (24 kHz) |
-| `SemanticRandom` | Steers SNAC latent toward a fixed random unit vector (24 kHz) |
-| `AudioSeal` | Neural watermarking via additive perturbation (16 kHz) |
-| `WavMark` | Bit-level spread-spectrum watermarking (16 kHz) |
-| `SilentCipher` | Psychoacoustic watermarking (44.1 kHz); requires checkpoint at `raw_bench/wm_ckpts/silent_cipher/` |
-
-#### Attack Codecs (`--attack`)
-
-| Value | Description |
-|---|---|
-| `snac` | SNAC 24 kHz encode→decode (default) |
-| `encodec24` | EnCodec 24 kHz encode→decode |
-| `encodec32` | EnCodec 32 kHz encode→decode |
-| `dac44` | DAC 44.1 kHz encode→decode |
-| `soundstream` | SoundStream 16 kHz encode→decode |
-
-#### All Arguments
 
 | Argument | Default | Description |
-|---|---|---|
-| `--mode` | `both` | `benchmark`, `detector`, or `both` |
-| `--datasets` | all 11 datasets | Dataset folder names or full paths (supports glob) |
-| `--watermarks` | `JointManifold SemanticCluster` | Watermarking methods to test |
-| `--filecount` | `None` (all files) | Number of audio files to process per dataset |
-| `--attack` | `snac` | Codec attack backend to use |
+| --- | --- | --- |
+| `--mode` | `both` | `detector`, `benchmark`, or `both` |
+| `--datasets` | all 11 | Names under `--base_dir`, or explicit paths (shell globs are expanded) |
+| `--watermarks` | `JointManifold SemanticCluster` | Methods to test |
+| `--joint_codecs` | `snac encodec24 encodec32` | Codec views for `JointManifold`: any of `snac`, `encodec24`, `encodec32`, `dac44`, `funcodec`, `apcodec` |
+| `--attack` | `all` | `snac`, `soundstream`, `encodec24`, `encodec32`, `dac44`, `funcodec`, `apcodec`, or `all` |
+| `--filecount` | all files | Files per dataset |
+| `--base_dir` | `../../dataset` | Dataset root |
+| `--out` | `../results_transferability` | Output root |
 
-#### Output Structure
+`funcodec` and `apcodec` require the `funcodec` and `apcodec` Python packages, which are not part of the default environment. When a package is missing the corresponding view or attack is skipped with a warning.
 
-```
-$base_output_dir/
-├── global_threshold_summary.csv         # Aggregated optimal thresholds across all datasets
-└── $dataset_name/
-    ├── benchmark_results.csv        # Per-file scores and PASS/FAIL (benchmark/both)
-    ├── combined_detectability_results.csv  # Combined NEG+POS+attacked thresholds (both)
-    └── $method_name/
-        └── $file_stem/
-            ├── 1_original.wav
-            ├── 2_watermarked.wav
-            ├── 3_lalm_attacked.wav
-            └── analysis_plot.png         # Waveform, spectrogram, and residual plots
-```
-
-For `--mode detector` and `--mode both`, threshold analysis files are saved alongside the input audio:
+Output (one pair of CSVs per attack, prefixed with the joint codec set):
 
 ```
-$audio_dir/
-├── detector_checker_results.csv
-└── detector_checker_thresholds_clean_$attack.csv
+$out/$dataset/
+├── benchmark_results_${joint}_${attack}.csv
+├── benchmark_summary_${joint}_${attack}.csv
+└── $method_${joint}_${attack}/$file_stem/   (1_original / 2_watermarked / 3_lalm_attacked .wav, analysis_plot.png)
 ```
 
-#### Example
+Print a pass-rate table by joint set and attack:
 
 ```bash
-# Run full pipeline: threshold estimation + attack survivability
-python watermark_testing_joint.py --mode both --datasets LibriSpeech Bach10 --watermarks JointManifold SemanticCluster --filecount 50 --attack snac
-
-# Estimate detection thresholds only (no attack)
-python watermark_testing_joint.py --mode detector --datasets LibriSpeech --watermarks JointManifold --filecount 30 --attack encodec24
-
-# Run benchmark with custom dataset path
-python watermark_testing_joint.py --mode benchmark --datasets ../../raw_bench/test_data/GuitarSet --watermarks SemanticCluster SemanticRandom --attack dac44
+python generate_summary.py --results_dir ../results_transferability
 ```
-
-
 
 ---
 
-### Transferability for All Methods and Datasets in Single Run
+## 3. Optimization-set sweep: `transferbility_testing_all.py`
+
+Sweeps every optimization set and attack codec in one run. Thresholds for the single-codec methods are calibrated on clean audio to a target false-positive rate; `JointManifold` passes when its score after attack exceeds the clean-audio score after the same attack.
 
 ```bash
-cd watermark_research/src
 python transferbility_testing_all.py \
-  --datasets $DATASET_NAMES \
-  --base_dir $DATASET_ROOT \
-  --watermarks JointManifold SemanticPCA SemanticCluster SemanticRandom \
-  --filecount 120 \
-  --opt_set all \
-  --attack all \
-  --out $OUTPUT_ROOT \
-  --skip_datasets $SKIPPED_DATASETS \
-  --save_wavs
+  --datasets LibriSpeech DAPS \
+  --watermarks JointManifold SemanticCluster SemanticPCA SemanticRandom \
+  --opt_set all --attack all \
+  --filecount 120 --out ../results_sweep --save_wavs
 ```
 
-#### What This Script Does
+Optimization sets (`--opt_set`):
 
-For each dataset × watermark method × optimization set × attack codec combination, the script:
+| Set | Paper name | Codec views |
+| --- | --- | --- |
+| `Opt_B1` | C1 | `snac_32`, `dac_16`, `dac_44` |
+| `Opt_B2` | C2 | `snac_32`, `encodec_24`, `encodec_32` |
+| `Opt_Mix` | F1 | `snac_24`, `dac_24`, `encodec_24` |
+| `Opt_A1` | | `snac_24`, `dac_16`, `dac_44` |
+| `Opt_A2` | | `snac_24`, `encodec_24`, `encodec_32` |
 
-1. **Calibrates** a detection threshold on clean audio (controls empirical FPR ≤ `--fpr`)
-2. **Embeds** a watermark into each audio file
-3. **Attacks** the watermarked audio via codec roundtrip (encode → decode)
-4. **Detects** whether the watermark survives the attack
-5. **Saves** per-experiment CSVs and an overall `summary_exp15.csv` per dataset
-
-#### Watermarking Methods (`--watermarks`)
-
-| Method | Description |
-|---|---|
-| `JointManifold` | Optimizes perturbation jointly across multiple codec latent spaces |
-| `SemanticPCA` | Steers the SNAC latent toward the top PCA direction of the codebook |
-| `SemanticCluster` | Steers toward the K-Means inter-centroid axis of the SNAC codebook |
-| `SemanticRandom` | Steers toward a fixed random axis in the SNAC latent space |
-
-#### Optimization Sets (`--opt_set`)
-
-Each set defines which codec latent spaces are jointly optimized during `JointManifold` embedding:
-
-| Set | Codecs |
-|---|---|
-| `Opt_A1` | `snac_24`, `dac_16`, `dac_44` |
-| `Opt_A2` | `snac_24`, `encodec_24`, `encodec_32` |
-| `Opt_Mix` | `snac_24`, `dac_24`, `encodec_24` |
-| `Opt_B1` | `snac_32`, `dac_16`, `dac_44` |
-| `Opt_B2` | `snac_32`, `encodec_24`, `encodec_32` |
-
-Use `--opt_set all` to run all five sets. For Semantic methods, the optimization set argument is accepted but has no effect (they only use `snac_24`).
-
-#### Attack Codecs (`--attack`)
-
-Each attack applies a full encode–decode roundtrip through the specified codec as a removal attempt:
-
-| Attack | Codec |
-|---|---|
-| `snac_44` | SNAC 44 kHz |
-| `encodec_48` | EnCodec 48 kHz |
-| `dac_24` | DAC 24 kHz |
-
-Use `--attack all` to run all three attacks.
-
-#### All Arguments
+Attack codecs (`--attack`): `snac_44`, `encodec_48`, `dac_24`, or `all`. The single-codec methods ignore `--opt_set` and always use `snac_24`.
 
 | Argument | Default | Description |
-|---|---|---|
-| `--datasets` | `LibriSpeech Bach10` | Dataset folder names or paths to evaluate |
-| `--base_dir` | `../../dataset` | Root directory for resolving dataset names |
-| `--out` | `../results_exp15` | Root directory for all output CSVs and audio artifacts |
-| `--watermarks` | `JointManifold SemanticCluster` | Watermarking methods to test |
-| `--filecount` | `120` | Number of audio files to process per experiment |
-| `--calib_files` | `42` | Number of clean files used for threshold calibration |
-| `--opt_set` | `all` | Which optimization set(s) to run (`all` or a single key) |
-| `--attack` | `all` | Which attack codec(s) to run (`all` or a single codec name) |
-| `--fpr` | `0.01` | Target false positive rate for threshold calibration |
-| `--seed` | `0` | Random seed for file shuffling and reproducibility |
-| `--save_wavs` | `False` | If set, saves `original / watermarked / attacked` WAV triplets |
-| `--skip_datasets` | `[]` | Dataset names to skip (matched against folder basename) |
+| --- | --- | --- |
+| `--datasets` | `LibriSpeech Bach10` | Names or paths |
+| `--skip_datasets` | none | Names to skip |
+| `--base_dir` | `../../dataset` | Dataset root |
+| `--out` | `../results_exp15` | Output root |
+| `--watermarks` | `JointManifold SemanticCluster` | Methods |
+| `--filecount` | `120` | Files per experiment |
+| `--calib_files` | `42` | Clean files used for calibration |
+| `--fpr` | `0.01` | Target false-positive rate for the single-codec thresholds |
+| `--seed` | `0` | Shuffle seed |
+| `--save_wavs` | off | Save original / watermarked / attacked triplets |
 
-#### Output Structure
+Output:
 
 ```
-$out/
-└── $dataset_name/
-    ├── summary_exp15.csv          # Aggregated stats across all experiments
-    ├── summary_exp15.txt          # Human-readable version of the summary table
-    └── results_$opt_$wm_vs_$atk.csv  # Per-file scores and pass/fail for each experiment
+$out/$dataset/
+├── summary_exp15.csv                      # one row per (method, opt set, attack)
+├── summary_exp15.txt
+├── results_${opt}_${method}_vs_${attack}.csv
+└── ${opt}_${method}_vs_${attack}/$file_stem/   (with --save_wavs)
 ```
 
-If `--save_wavs` is set, audio artifacts are saved alongside:
+---
 
-```
-$out/
-└── $dataset_name/
-    └── $opt_$wm_vs_$atk/
-        └── $file_stem/
-            ├── 1_original.wav
-            ├── 2_watermarked.wav
-            └── 3_attacked.wav
-```
+## 4. DSP attacks: `watermark_against_attacks.py`
 
-#### Example
+Robustness to Gaussian noise, amplitude scaling, low-pass filtering, and resampling (Table 3).
 
 ```bash
-python transferbility_testing_all.py \
-  --datasets LibriSpeech Bach10 \
-  --base_dir ../../raw_bench/test_data \
-  --watermarks JointManifold SemanticPCA SemanticCluster SemanticRandom \
-  --filecount 120 \
-  --opt_set all \
-  --attack all \
-  --out ../../results_exp15 \
-  --skip_datasets AIR Clotho DAPS DEMAND Freischuetz GuitarSet jaCappella MAESTRO PCD \
-  --save_wavs
+python watermark_against_attacks.py --mode benchmark \
+  --datasets LibriSpeech AIR \
+  --watermarks all --filecount 120
 ```
 
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--mode` | `benchmark` | `benchmark`, `detector`, or `both` |
+| `--datasets` | all 11 | Names under `--base_dir` |
+| `--watermarks` | `SemanticCluster SemanticRandom SemanticPCA` | Methods, or `all` |
+| `--filecount` | `1000` | Files per dataset |
+| `--base_dir` | `../../dataset` | Dataset root |
+| `--out` | `../results_dsp` | Output root |
+
+Results are written to `$out/$dataset/general_attack_results.csv` with one row per file, method, and attack.
+
+---
+
+## 5. Audio quality
+
+See `audio_quality_check/README.md`. In short:
+
+```bash
+cd ../../audio_quality_check
+python evaluate_quality.py --dir ../watermark_research/results_snac --out quality_results.csv
+python plot_for_paper.py --delta_si_snr_csv quality_results.csv --utmos_csv quality_results.csv --out plots
+```

@@ -20,7 +20,7 @@ audiocraft==1.3.0
 audiomentations==0.43.1
 audioread==3.1.0
 audioseal==0.1.8
-av @ file:///home/conda/feedstock_root/build_artifacts/av_1699625422458/work
+av==11.0.0
 babel==2.17.0
 beautifulsoup4==4.14.3
 bleach==6.3.0
@@ -141,7 +141,7 @@ notebook==7.5.0
 notebook_shim==0.2.4
 num2words==0.5.14
 numba==0.62.1
-numpy @ file:///home/conda/feedstock_root/build_artifacts/numpy_1707225380409/work/dist/numpy-1.26.4-cp310-cp310-linux_x86_64.whl#sha256=51131fd8fc130cd168aecaf1bc0ea85f92e8ffebf211772ceb16ac2e7f10d7ca
+numpy==1.26.4
 numpy-minmax==0.5.0
 numpy-rms==0.6.0
 nvidia-cublas-cu12==12.8.4.1
@@ -202,8 +202,7 @@ pyzmq==27.1.0
 pyzstd==0.18.0
 qqdm==0.0.7
 randomname==0.2.1
-# Editable install with no version control (raw-bench==0.1.0)
--e /project/g/akinesia112/raw_bench
+-e ./raw_bench
 referencing==0.37.0
 regex==2025.11.3
 requests==2.32.5
