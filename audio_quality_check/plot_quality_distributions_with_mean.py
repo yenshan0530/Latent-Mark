@@ -1,27 +1,27 @@
 import os
+import argparse
 import pandas as pd
 import matplotlib.pyplot as plt
 
 # --------------------------------
 # CONFIG
 # --------------------------------
-csv_files = {
-    "AudioSeal": "AudioSeal_quality_results.csv",
-    "Manifold-Cluster": "Manifold-Cluster_quality_results.csv",
-    "Manifold-PCA": "Manifold-PCA_quality_results.csv",
-    "Manifold-Random": "Manifold-Random_quality_results.csv",
-    "SilentCipher": "SilentCipher_quality_results.csv",
-    "WavMark": "WavMark_quality_results.csv",
-}
+ap = argparse.ArgumentParser(description="Per-metric histograms with the clean-audio mean marked, one CSV per method.")
+ap.add_argument("--dir", default=".", help="folder holding <Method>_quality_results.csv files from evaluate_quality.py")
+ap.add_argument("--out", default="plots_distributions")
+args = ap.parse_args()
+
+METHODS = ["AudioSeal", "Latent-Cluster", "Latent-PCA", "Latent-Random", "SilentCipher", "WavMark"]
+csv_files = {m: os.path.join(args.dir, f"{m}_quality_results.csv") for m in METHODS}
 
 metrics = ["si_snr_watermarked", "delta_si_snr", "snr", "lsd", "pesq", "stoi"]
 
 # Histogram colors per model
 model_colors = {
     "AudioSeal": "#1f77b4",
-    "Manifold-Cluster": "#ff7f0e",
-    "Manifold-PCA": "#2ca02c",
-    "Manifold-Random": "#d62728",
+    "Latent-Cluster": "#ff7f0e",
+    "Latent-PCA": "#2ca02c",
+    "Latent-Random": "#d62728",
     "SilentCipher": "#9467bd",
     "WavMark": "#8c564b",
 }
@@ -43,7 +43,7 @@ all_data = pd.concat(dfs, ignore_index=True)
 # --------------------------------
 # PLOTS
 # --------------------------------
-output_dir = "plots_comparison"
+output_dir = args.out
 os.makedirs(output_dir, exist_ok=True)
 
 for metric in metrics:

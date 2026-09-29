@@ -12,7 +12,7 @@ The pipeline consists of two main stages:
 
 To ensure the scripts correctly identify the original and watermarked audio pairs, as well as extract the dataset and model names for plotting, please organize your audio files according to the following structure (maintaining the relative hierarchy of the bottom 4 levels):
 
-    Target_Directory/ (e.g., my_data/transferbility_audio/)
+    Target_Directory/ (the --out folder of benchmark.py --save_wavs)
      └── Dataset_Name/             <-- 4th level from the bottom (X-axis in plots)
           └── Model_Name/          <-- 3rd level from the bottom (Legend in plots)
                └── Audio_Clip/     <-- Bottom level directory
@@ -58,9 +58,7 @@ Produces the Delta SI-SNR and UTMOS boxplots used in the paper, as PNG (with tit
 
     python plot_for_paper.py --delta_si_snr_csv quality_results.csv --utmos_csv quality_results.csv --out plots_paper_figures
 
-`plot_quality_distributions_with_mean.py` draws per-metric histograms with the clean-audio mean marked. It reads one CSV per method named `<Method>_quality_results.csv` from the current directory; edit the `csv_files` map at the top to point at your files.
-
-`quality_metric_summary.csv` holds the per-method mean and standard deviation of every metric on the evaluation set, for reference.
+`plot_quality_distributions_with_mean.py` draws per-metric histograms with the clean-audio mean marked. It reads one CSV per method named `<Method>_quality_results.csv` from `--dir` (methods: AudioSeal, Latent-Cluster, Latent-PCA, Latent-Random, SilentCipher, WavMark) and writes to `--out`.
 
 ---
 

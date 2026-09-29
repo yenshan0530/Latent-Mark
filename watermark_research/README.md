@@ -1,223 +1,120 @@
-# Watermark Research
+# Watermark research
 
-Embedding, detection, and robustness benchmarks for Latent-Mark. All commands below are run from `watermark_research/src/`.
+Embedding, detection and robustness benchmarks for Latent-Mark. Two files carry the whole pipeline:
 
-## Setup
+| File | Role |
+| --- | --- |
+| `src/latentmark.py` | The method (Section 3 of the paper): codec views, secret axes, calibration, `LatentMark` embed/detect, baseline wrappers, codec and DSP attacks |
+| `src/benchmark.py` | The experiments (Section 4 and 5): detectability, survivability and transferability for any set of methods, attacks and datasets |
+| `src/summarize.py` | Turns one or more result folders into paper-style tables |
+| `legacy/` | The original per-experiment scripts, kept for reference |
 
-```bash
-# From the repository root
-conda env create -f watermark_research/environment.yml
-conda activate aw
-```
-
-Alternatives:
-
-```bash
-# Exact conda spec
-conda create -n aw --file watermark_research/conda-spec.txt
-conda activate aw
-
-# pip only (the raw_bench submodule must be checked out)
-python -m venv .venv && source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -r watermark_research/requirements.txt
-```
+All commands below are run from `watermark_research/src/` inside the `latentmark` environment (`bash setup_env.sh` at the repository root creates it).
 
 ## Datasets
 
-Download the evaluation datasets by following the `raw_bench` submodule's README. Every script expects a root folder with one subfolder per dataset, for example:
+Every script expects a root folder with one subfolder per dataset. The default root is `../../dataset`; override it with `--base_dir`, or pass dataset paths directly.
 
 ```
 dataset/
-├── AIR/
-├── Clotho/
-├── DAPS/
-├── LibriSpeech/
-└── ...
+├── AIR/  ├── Clotho/  ├── DAPS/  ├── LibriSpeech/  ├── PCD/  ├── jaCappella/  ├── MAESTRO/  ├── GuitarSet/  └── Freischuetz/
 ```
 
-The default root is `../../dataset` relative to `src/`. Override it with `--base_dir`. `SilentCipher` needs its checkpoint at `raw_bench/wm_ckpts/silent_cipher/44_1_khz/73999_iteration`, which the submodule provides.
+The evaluation sets come from RAW-Bench (`raw_bench` submodule; follow its README to download them). Codec weights (SNAC, DAC, EnCodec) and the AudioSeal, WavMark and SilentCipher checkpoints download automatically on first use.
 
-## Watermarking methods (`--watermarks`)
+## Methods (`--methods`)
 
-| Method | Paper name | Description |
+| Name | Description |
+| --- | --- |
+| `Latent-Cluster` | Shift along the axis between the two k-means centroids of the codec's first codebook (Eq. 7). The main method. |
+| `Latent-PCA` | Shift along the first principal component of the codebook |
+| `Latent-Random` | Shift along a fixed random unit vector |
+| `Latent-Joint` | Cross-Codec Optimization: one perturbation optimized jointly across several surrogate codecs (`--joint_views`) |
+| `AudioSeal`, `WavMark`, `SilentCipher` | Baselines, detected with each method's own rule |
+
+The single-codec methods use `--single_view` (default `snac_24`). Codec views: `snac_24`, `snac_32`, `snac_44`, `dac_16`, `dac_24`, `dac_44`, `encodec_24`, `encodec_32`, `encodec_48`.
+
+## Attacks (`--attacks`)
+
+Any codec view name runs a full encode-quantize-decode round trip through that codec. The DSP attacks of Table 3 are `gaussian` (`--snr_db`, default 60), `amplitude` (`--amp_ratio`, 0.5), `lowpass` (`--lowpass_hz`, 4000) and `resample` (`--resample_hz`, 16000).
+
+## Running the benchmark
+
+```bash
+# Table 1: detectability and survivability under SNAC 24 kHz compression
+python benchmark.py --datasets LibriSpeech DAPS AIR Clotho PCD jaCappella MAESTRO GuitarSet \
+    --methods Latent-Cluster Latent-PCA Latent-Random Latent-Joint AudioSeal WavMark SilentCipher \
+    --joint_views snac_32 dac_16 dac_44 --attacks snac_24 --filecount 120 --out ../results_table1
+
+# Table 2: one optimization set, attacked with unseen codecs (repeat with --tag C2 / F1 and other --joint_views)
+python benchmark.py --datasets Clotho LibriSpeech DAPS PCD jaCappella --methods Latent-Joint \
+    --joint_views snac_32 dac_16 dac_44 --attacks snac_24 snac_44 encodec_48 dac_24 \
+    --xfer_condition snac_24 --filecount 120 --out ../results_table2 --tag C1
+
+# Table 3: DSP attacks
+python benchmark.py --datasets AIR Freischuetz GuitarSet jaCappella LibriSpeech \
+    --methods Latent-Cluster AudioSeal WavMark SilentCipher \
+    --attacks gaussian amplitude lowpass resample --filecount 120 --out ../results_table3
+
+# Figure 3 input: keep the audio
+python benchmark.py --datasets Clotho LibriSpeech DAPS PCD jaCappella --attacks snac_24 --save_wavs --out ../results_audio
+```
+
+Optimization sets used in the paper:
+
+| Paper | `--joint_views` |
+| --- | --- |
+| C1 | `snac_32 dac_16 dac_44` |
+| C2 | `snac_32 encodec_24 encodec_32` |
+| F1 | `snac_24 dac_24 encodec_24` |
+
+### What one run does
+
+For every dataset the script draws `--filecount` test files and `--calib_files` further clean files for calibration (disjoint when the dataset is large enough). Every file is cropped to its first `--seconds` seconds (default 5; `0` keeps full length). For each Latent-Mark method it estimates the null distribution of the projection on the calibration files, giving `mu`, `sigma`, `tau = mu + k sigma` and `alpha` per codec view (Eq. 6 and 8). Then for each test file and method it records:
+
+- `clean_score` and `wm_score`: detector output on the clean and the watermarked clip. Detectability accuracy, TPR and FPR use `score > threshold`, where the threshold is 0 for Latent-Mark (normalized margin) and each baseline's published value.
+- `attacked_score__<attack>`: detector output after the attack. Survivability is the fraction above the threshold.
+- `clean_attacked_score__<attack>`: the same attack applied to the clean clip. Transferability is the fraction of files with a positive Delta-Score, `attacked_score - clean_attacked_score` (Section 3.3, Stage 4). With `--xfer_condition snac_24` it is computed only over files whose watermark survived SNAC 24 kHz, as in Section 5.2.
+
+### Latent-Mark hyperparameters
+
+Defaults follow Section 3. Every value is a flag.
+
+| Flag | Default | Paper |
 | --- | --- | --- |
-| `SemanticCluster` | Latent-Cluster | Shifts the SNAC latent along the axis between the two k-means centroids of the codebook (24 kHz) |
-| `SemanticPCA` | Latent-PCA | Shifts along the first principal component of the codebook |
-| `SemanticRandom` | Latent-Random | Shifts along a fixed random unit vector |
-| `JointManifold` | Latent-Joint | Jointly optimizes one perturbation across several codec latent spaces (Cross-Codec Optimization) |
-| `AudioSeal` | baseline | Neural additive watermark (16 kHz) |
-| `WavMark` | baseline | Spread-spectrum bit watermark (16 kHz) |
-| `SilentCipher` | baseline | Psychoacoustic watermark (44.1 kHz) |
+| `--k` | 1.5 | calibration constant k in `tau = mu + k sigma` |
+| `--gamma` | 1.5 | safety margin: the embedding target is `tau + gamma sigma` per view |
+| `--steps`, `--lr` | 150, 0.005 | Adam steps on the waveform perturbation |
+| `--beta`, `--sdr` | 2.5, 42 dB | budget `eps = clip(beta RMS(s) 10^(-SDR/20), eps_min, eps_max)` |
+| `--eps_min`, `--eps_max` | 1e-4, 0.1 | |
+| `--work_sr`, `--pad_multiple` | 44100, 4096 | working rate and padding for Latent-Joint (Stage 1) |
+| `--calib_files`, `--calib_frames` | 42, 512 | clean files and sampled frames per file for the null distribution |
+| `--target_mode` | `margin` | `tau` drops the safety margin; `gamma` uses an absolute target instead of a margin in null-std units |
+| `--sigma_level` | `file` | std of the clip-mean projection over clean clips; `frame` uses individual frames |
+| `--hinge` | `mean` | hinge on the clip-mean projection; `frame` applies it per frame |
 
----
+For Latent-Joint each view's hinge is divided by its `alpha` (Eq. 9) and the detection score is the median of the per-view margins (Eq. 10).
 
-## 1. Single-codec benchmark: `watermark_testing.py`
+### Output
 
-Embeds each watermark, attacks with a SNAC 24 kHz encode-decode round trip, and detects. This is the Table 1 pipeline.
+```
+<out>[_<tag>]/
+├── config.json               every flag of the run
+├── summary_all.csv           one row per dataset x method
+└── <dataset>/
+    ├── scores.csv            one row per file x method with every score above
+    ├── summary.csv
+    └── <method>/<stem>/      with --save_wavs: 1_original.wav, 2_watermarked.wav, 3_attacked.wav
+                              (+ 3_attacked_<attack>.wav per attack, + analysis_plot.png with --plots)
+```
+
+## Tables
 
 ```bash
-python watermark_testing.py --mode both \
-  --datasets LibriSpeech DAPS \
-  --watermarks SemanticCluster SemanticPCA SemanticRandom AudioSeal WavMark SilentCipher \
-  --filecount 120
+python summarize.py ../results_table1 ../results_table3            # rows = method, columns = dataset x metric
+python summarize.py ../results_table2_C1 ../results_table2_C2 ../results_table2_F1 --by run --xfer
 ```
 
-| Argument | Default | Description |
-| --- | --- | --- |
-| `--mode` | `both` | `detector` (embed and detect, no attack), `benchmark` (embed, attack, detect), or `both` (run detector then benchmark and compute the combined detection threshold) |
-| `--datasets` | all 11 | Dataset folder names under `--base_dir` |
-| `--watermarks` | `SemanticCluster SemanticRandom SemanticPCA` | Methods to test |
-| `--filecount` | `50` | Files per dataset |
-| `--base_dir` | `../../dataset` | Dataset root |
-| `--out` | `../results_snac` | Output root |
+## Audio quality
 
-Output:
-
-```
-$out/$dataset/
-├── qwen_benchmark_results.csv          # per-file scores and PASS/FAIL after the SNAC attack
-├── qwen_benchmark_summary.txt
-├── combined_detectability_results.csv  # optimal threshold and accuracy per method (--mode both)
-└── $method/$file_stem/
-    ├── 1_original.wav
-    ├── 2_watermarked.wav
-    ├── 3_lalm_attacked.wav
-    └── analysis_plot.png
-$out/global_threshold_summary.csv       # thresholds across all datasets (--mode both)
-```
-
-Detector-mode CSVs (`detector_checker_results.csv`) are written next to the input audio.
-
-Summarize into a Table 1 layout:
-
-```bash
-python summarize_results.py --results_dir ../results_snac --out watermark_summary_table.csv
-```
-
----
-
-## 2. Cross-codec optimization with a chosen attack: `transferbility_testing.py`
-
-Runs `JointManifold` over a selectable set of codec views and attacks with any of several codecs. Thresholds are estimated per attack from clean and watermarked scores before the attack is applied.
-
-```bash
-python transferbility_testing.py --mode both \
-  --datasets LibriSpeech \
-  --watermarks JointManifold SemanticCluster \
-  --joint_codecs snac dac44 funcodec \
-  --attack all \
-  --filecount 120
-```
-
-| Argument | Default | Description |
-| --- | --- | --- |
-| `--mode` | `both` | `detector`, `benchmark`, or `both` |
-| `--datasets` | all 11 | Names under `--base_dir`, or explicit paths (shell globs are expanded) |
-| `--watermarks` | `JointManifold SemanticCluster` | Methods to test |
-| `--joint_codecs` | `snac encodec24 encodec32` | Codec views for `JointManifold`: any of `snac`, `encodec24`, `encodec32`, `dac44`, `funcodec`, `apcodec` |
-| `--attack` | `all` | `snac`, `soundstream`, `encodec24`, `encodec32`, `dac44`, `funcodec`, `apcodec`, or `all` |
-| `--filecount` | all files | Files per dataset |
-| `--base_dir` | `../../dataset` | Dataset root |
-| `--out` | `../results_transferability` | Output root |
-
-`funcodec` and `apcodec` require the `funcodec` and `apcodec` Python packages, which are not part of the default environment. When a package is missing the corresponding view or attack is skipped with a warning.
-
-Output (one pair of CSVs per attack, prefixed with the joint codec set):
-
-```
-$out/$dataset/
-├── benchmark_results_${joint}_${attack}.csv
-├── benchmark_summary_${joint}_${attack}.csv
-└── $method_${joint}_${attack}/$file_stem/   (1_original / 2_watermarked / 3_lalm_attacked .wav, analysis_plot.png)
-```
-
-Print a pass-rate table by joint set and attack:
-
-```bash
-python generate_summary.py --results_dir ../results_transferability
-```
-
----
-
-## 3. Optimization-set sweep: `transferbility_testing_all.py`
-
-Sweeps every optimization set and attack codec in one run. Thresholds for the single-codec methods are calibrated on clean audio to a target false-positive rate; `JointManifold` passes when its score after attack exceeds the clean-audio score after the same attack.
-
-```bash
-python transferbility_testing_all.py \
-  --datasets LibriSpeech DAPS \
-  --watermarks JointManifold SemanticCluster SemanticPCA SemanticRandom \
-  --opt_set all --attack all \
-  --filecount 120 --out ../results_sweep --save_wavs
-```
-
-Optimization sets (`--opt_set`):
-
-| Set | Paper name | Codec views |
-| --- | --- | --- |
-| `Opt_B1` | C1 | `snac_32`, `dac_16`, `dac_44` |
-| `Opt_B2` | C2 | `snac_32`, `encodec_24`, `encodec_32` |
-| `Opt_Mix` | F1 | `snac_24`, `dac_24`, `encodec_24` |
-| `Opt_A1` | | `snac_24`, `dac_16`, `dac_44` |
-| `Opt_A2` | | `snac_24`, `encodec_24`, `encodec_32` |
-
-Attack codecs (`--attack`): `snac_44`, `encodec_48`, `dac_24`, or `all`. The single-codec methods ignore `--opt_set` and always use `snac_24`.
-
-| Argument | Default | Description |
-| --- | --- | --- |
-| `--datasets` | `LibriSpeech Bach10` | Names or paths |
-| `--skip_datasets` | none | Names to skip |
-| `--base_dir` | `../../dataset` | Dataset root |
-| `--out` | `../results_exp15` | Output root |
-| `--watermarks` | `JointManifold SemanticCluster` | Methods |
-| `--filecount` | `120` | Files per experiment |
-| `--calib_files` | `42` | Clean files used for calibration |
-| `--fpr` | `0.01` | Target false-positive rate for the single-codec thresholds |
-| `--seed` | `0` | Shuffle seed |
-| `--save_wavs` | off | Save original / watermarked / attacked triplets |
-
-Output:
-
-```
-$out/$dataset/
-├── summary_exp15.csv                      # one row per (method, opt set, attack)
-├── summary_exp15.txt
-├── results_${opt}_${method}_vs_${attack}.csv
-└── ${opt}_${method}_vs_${attack}/$file_stem/   (with --save_wavs)
-```
-
----
-
-## 4. DSP attacks: `watermark_against_attacks.py`
-
-Robustness to Gaussian noise, amplitude scaling, low-pass filtering, and resampling (Table 3).
-
-```bash
-python watermark_against_attacks.py --mode benchmark \
-  --datasets LibriSpeech AIR \
-  --watermarks all --filecount 120
-```
-
-| Argument | Default | Description |
-| --- | --- | --- |
-| `--mode` | `benchmark` | `benchmark`, `detector`, or `both` |
-| `--datasets` | all 11 | Names under `--base_dir` |
-| `--watermarks` | `SemanticCluster SemanticRandom SemanticPCA` | Methods, or `all` |
-| `--filecount` | `1000` | Files per dataset |
-| `--base_dir` | `../../dataset` | Dataset root |
-| `--out` | `../results_dsp` | Output root |
-
-Results are written to `$out/$dataset/general_attack_results.csv` with one row per file, method, and attack.
-
----
-
-## 5. Audio quality
-
-See `audio_quality_check/README.md`. In short:
-
-```bash
-cd ../../audio_quality_check
-python evaluate_quality.py --dir ../watermark_research/results_snac --out quality_results.csv
-python plot_for_paper.py --delta_si_snr_csv quality_results.csv --utmos_csv quality_results.csv --out plots
-```
+See `../audio_quality_check/README.md`. The `--save_wavs` layout above is what `evaluate_quality.py --dir` scans.
