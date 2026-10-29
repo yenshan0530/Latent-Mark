@@ -79,11 +79,14 @@ See `watermark_research/README.md` for every flag and the exact commands behind 
 ## Citation
 
 ```bibtex
-@inproceedings{chen2026latentmark,
-  title     = {Latent-Mark: An Audio Watermark Robust to Neural Codec Compression},
-  author    = {Chen, Yen-Shan and Lai, Shih-Yu and Tsou, Ying-Jung and Lin, Yi-Cheng and Chen, Bing-Yu and Chen, Yun-Nung and Lee, Hung-yi and Chen, Shang-Tse},
-  booktitle = {Proc. Interspeech 2026},
-  year      = {2026}
+@inproceedings{chen26u_interspeech,
+  title     = {{Latent-Mark: An Audio Watermark Robust to Neural Codec Compression}},
+  author    = {Yen-Shan Chen and Shih-Yu Lai and Ying-Jung Tsou and Yi-Cheng Lin and Bing-Yu Chen and Yun-Nung Chen and Hung-yi Lee and Shang-Tse Chen},
+  year      = {2026},
+  booktitle = {{Interspeech 2026 [Long Track]}},
+  pages     = {3052--3061},
+  doi       = {10.21437/Interspeech.2026-1979},
+  issn      = {2958-1796},
 }
 ```
 
